@@ -1,0 +1,240 @@
+:root {
+  color-scheme: light;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #f5f5f7;
+  color: #111214;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  background: #f5f5f7;
+}
+
+button,
+textarea {
+  font: inherit;
+}
+
+button {
+  border: 1px solid #d0d7de;
+  background: #fff;
+  color: #111214;
+  border-radius: 8px;
+  padding: 0.55rem 0.85rem;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+textarea,
+pre {
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  background: #fff;
+}
+
+textarea {
+  width: 100%;
+  min-height: 10rem;
+  resize: vertical;
+  padding: 0.85rem;
+  line-height: 1.5;
+}
+
+pre {
+  margin: 0;
+  padding: 0.85rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.app-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid #e2e7ec;
+  background: #ffffff;
+}
+
+.topbar h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.25rem;
+}
+
+.topbar p {
+  margin: 0;
+  color: #5b6570;
+  max-width: 42rem;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.workspace {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(18rem, 24rem) minmax(24rem, 1fr) minmax(18rem, 26rem);
+  gap: 1rem;
+  padding: 1rem;
+  min-height: 0;
+}
+
+.panel {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.prompt-panel,
+.spec-panel,
+.preview-panel {
+  background: transparent;
+}
+
+.catalog-panel h2 {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+}
+
+.catalog-panel pre {
+  min-height: 14rem;
+  font-size: 0.8rem;
+}
+
+.status-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.status {
+  border-radius: 8px;
+  padding: 0.75rem;
+  font-size: 0.92rem;
+}
+
+.status.info {
+  background: #edf5ff;
+  color: #225d9c;
+}
+
+.status.error {
+  background: #fff1f1;
+  color: #b42318;
+}
+
+.preview-canvas-shell {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  background-image:
+    linear-gradient(45deg, #f3f4f6 25%, transparent 25%),
+    linear-gradient(-45deg, #f3f4f6 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #f3f4f6 75%),
+    linear-gradient(-45deg, transparent 75%, #f3f4f6 75%);
+  background-size: 24px 24px;
+  background-position: 0 0, 0 12px, 12px -12px, -12px 0;
+}
+
+.preview-center {
+  min-height: 100%;
+  min-width: 100%;
+  display: flex;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.preview-empty,
+.preview-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  text-align: center;
+}
+
+.preview-empty {
+  color: #5b6570;
+}
+
+.preview-overlay {
+  background: rgba(255, 255, 255, 0.7);
+  z-index: 1;
+}
+
+.canvas-mount {
+  width: 100%;
+  max-width: 100%;
+}
+
+.canvas-mount > div {
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.meta {
+  margin-left: 0.5rem;
+  color: #5b6570;
+  font-size: 0.85rem;
+}
+
+.zoom-controls {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.spec-panel pre {
+  flex: 1;
+  min-height: 0;
+}
+
+@media (max-width: 1100px) {
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .topbar {
+    flex-direction: column;
+  }
+}
