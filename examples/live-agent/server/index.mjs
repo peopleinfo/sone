@@ -1,5 +1,6 @@
 import http from "node:http";
 import { createGenerationStream, toErrorResponse } from "./generate.mjs";
+import { handleChat } from "./chat.mjs";
 
 const HOST = process.env.LIVE_AGENT_API_HOST || "127.0.0.1";
 const PORT = Number(process.env.LIVE_AGENT_API_PORT || 5174);
@@ -119,11 +120,46 @@ async function handleGenerate(req, res) {
   }
 }
 
+async function handleAgentChat(req, res) {
+  const controller = new AbortController();
+  req.on("aborted", () => controller.abort());
+  res.on("close", () => {
+    if (!res.writableEnded) controller.abort();
+  });
+
+  try {
+    const body = await readJsonBody(req);
+    const result = await handleChat(body, { signal: controller.signal });
+    sendJson(res, 200, result);
+  } catch (error) {
+    if (res.headersSent) {
+      res.destroy(error);
+      return;
+    }
+
+    if (error?.status === 400 || error?.status === 413) {
+      sendJson(res, error.status, {
+        error: "invalid_request",
+        message: error.message,
+      });
+      return;
+    }
+
+    const response = toErrorResponse(error);
+    sendJson(res, response.status, response.body);
+  }
+}
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || `${HOST}:${PORT}`}`);
 
   if (req.method === "POST" && url.pathname === "/api/generate") {
     void handleGenerate(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/agent/chat") {
+    void handleAgentChat(req, res);
     return;
   }
 
