@@ -5,6 +5,15 @@ import { soneSchema } from "./schema";
 const sizeValue = z.union([z.number(), z.literal("auto"), z.string()]);
 const spacingValue = z.union([z.number(), z.string()]);
 const alignItems = z.enum(["flex-start", "flex-end", "center", "stretch", "baseline"]);
+const alignContent = z.enum([
+  "flex-start",
+  "flex-end",
+  "center",
+  "stretch",
+  "space-between",
+  "space-around",
+  "space-evenly",
+]);
 const justifyContent = z.enum([
   "flex-start",
   "flex-end",
@@ -18,6 +27,9 @@ const gridTrack = z.union([z.number(), z.literal("auto"), z.string()]);
 
 const baseStyleProps = z.object({
   tag: z.string().optional(),
+  display: z.enum(["none", "flex", "contents"]).optional(),
+  direction: z.enum(["ltr", "rtl"]).optional(),
+  boxSizing: z.enum(["border-box", "content-box"]).optional(),
   width: sizeValue.optional(),
   height: sizeValue.optional(),
   minWidth: sizeValue.optional(),
@@ -40,14 +52,43 @@ const baseStyleProps = z.object({
   flexGrow: z.number().optional(),
   flexShrink: z.number().optional(),
   flex: z.number().optional(),
+  flexBasis: sizeValue.optional(),
+  flexWrap: z.enum(["wrap", "nowrap", "wrap-reverse"]).optional(),
+  alignContent: alignContent.optional(),
   alignItems: alignItems.optional(),
   alignSelf: alignItems.optional(),
   justifyContent: justifyContent.optional(),
+  left: spacingValue.optional(),
+  right: spacingValue.optional(),
+  top: spacingValue.optional(),
+  bottom: spacingValue.optional(),
+  start: spacingValue.optional(),
+  end: spacingValue.optional(),
+  position: z.enum(["absolute", "relative", "static"]).optional(),
+  overflow: z.enum(["visible", "hidden", "scroll"]).optional(),
+  pageBreak: z.enum(["before", "after", "avoid"]).optional(),
+  aspectRatio: z.number().optional(),
   background: color.optional(),
   borderColor: color.optional(),
   borderWidth: z.number().optional(),
+  borderTopWidth: z.number().optional(),
+  borderRightWidth: z.number().optional(),
+  borderBottomWidth: z.number().optional(),
+  borderLeftWidth: z.number().optional(),
   cornerRadius: z.union([z.number(), z.array(z.number())]).optional(),
+  cornerSmoothing: z.number().optional(),
+  corner: z.enum(["cut", "round"]).optional(),
   opacity: z.number().min(0).max(1).optional(),
+  rotation: z.number().optional(),
+  translateX: z.number().optional(),
+  translateY: z.number().optional(),
+  scale: z.union([z.number(), z.tuple([z.number(), z.number()])]).optional(),
+  shadows: z.array(z.string()).optional(),
+  filters: z.array(z.string()).optional(),
+  gridColumnStart: z.number().int().optional(),
+  gridColumnSpan: z.number().int().positive().optional(),
+  gridRowStart: z.number().int().optional(),
+  gridRowSpan: z.number().int().positive().optional(),
 }).strict();
 
 const textSegmentStyle = z.object({
@@ -89,11 +130,27 @@ const textProps = baseStyleProps.merge(textSegmentStyle).extend({
   hyphenation: z.union([z.string(), z.boolean()]).optional(),
   autofit: z.boolean().optional(),
   baseDir: z.enum(["ltr", "rtl", "auto"]).optional(),
+  indentSize: z.number().optional(),
+  hangingIndentSize: z.number().optional(),
+  tabStops: z.array(z.number()).optional(),
+  tabLeader: z.string().optional(),
+  orientation: z.union([z.literal(0), z.literal(90), z.literal(180), z.literal(270)]).optional(),
 });
+
+const textDefaultProps = textSegmentStyle.extend({
+  nowrap: z.boolean().optional(),
+  maxLines: z.number().int().positive().optional(),
+  lineBreak: z.enum(["greedy", "knuth-plass"]).optional(),
+  textOverflow: z.enum(["clip", "ellipsis"]).optional(),
+  lineHeight: z.number().positive().optional(),
+  align: z.enum(["left", "right", "center", "justify"]).optional(),
+  indentSize: z.number().optional(),
+}).strict();
 
 const tableCell = baseStyleProps.extend({
   segments: z.array(textSegment).optional(),
   text: z.string().optional(),
+  style: textSegmentStyle.optional(),
   colspan: z.number().int().positive().optional(),
   rowspan: z.number().int().positive().optional(),
   header: z.boolean().optional(),
@@ -106,6 +163,7 @@ const tableRow = z.object({
 const listItem = baseStyleProps.extend({
   segments: z.array(textSegment).optional(),
   text: z.string().optional(),
+  style: textSegmentStyle.optional(),
 });
 
 export const soneCatalog = defineCatalog(soneSchema, {
@@ -140,6 +198,22 @@ export const soneCatalog = defineCatalog(soneSchema, {
         ],
         size: 28,
       },
+    },
+    TextDefault: {
+      props: textDefaultProps,
+      description:
+        "Applies default text styling to all child Text nodes in this subtree.",
+      example: { size: 15, color: "#111111", lineHeight: 1.4 },
+    },
+    PageBreak: {
+      props: z
+        .object({
+          mode: z.enum(["before", "after", "avoid"]).optional(),
+        })
+        .strict(),
+      description:
+        "Multi-page PDF break marker. Generates an invisible spacer that carries pageBreak mode.",
+      example: { mode: "before" },
     },
     Photo: {
       props: baseStyleProps.extend({
@@ -212,6 +286,7 @@ export {
   baseStyleProps,
   textSegment,
   textSegmentStyle,
+  textDefaultProps,
   tableCell,
   tableRow,
   listItem,

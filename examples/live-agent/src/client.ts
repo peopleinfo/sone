@@ -19,7 +19,7 @@ const STORAGE_LLM_CONFIG = "sone.live-agent.llm-config";
 const OPENAI_COMPAT_CUSTOM_RULES = [
   "Output ONLY JSONL patches. No prose, markdown, code fences, or explanations.",
   "Generate concise Sone layouts that fit within a single card or image canvas.",
-  "Use the custom Sone catalog exactly: component type must be one of Column, Row, Grid, Text, Photo, Table, List, Path, ClipGroup.",
+  "Use the custom Sone catalog exactly: component type must be one of Column, Row, Grid, Text, TextDefault, PageBreak, Photo, Table, List, Path, ClipGroup.",
   "The spec field root must exactly match an existing key under elements (e.g. root \"root\" with /elements/root). Never set root to a name you did not add under elements.",
   "Prefer Column or Row as the root layout container with a simple id like root.",
   "On Column, Row, Grid, Photo, Path, ClipGroup, Table cells, and List items: use background for fills, not color. Use Text.props.segments[].style.color for text color.",

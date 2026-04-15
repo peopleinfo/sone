@@ -58,4 +58,79 @@ describe("specToSoneNode", () => {
     const issues = validateSoneSpec(spec);
     expect(issues.some((issue) => issue.path.includes("/rows/0/cells"))).toBe(true);
   });
+
+  it("accepts style shorthand on table/list item text", () => {
+    const spec: SoneSpec = {
+      root: "root",
+      elements: {
+        root: {
+          type: "Column",
+          props: { gap: 12 },
+          children: ["table", "list"],
+        },
+        table: {
+          type: "Table",
+          props: {
+            rows: [
+              {
+                cells: [
+                  { text: "Subtotal", style: { weight: "bold", color: "#111111" } },
+                  { text: "$128.00", style: { align: "right" } },
+                ],
+              },
+            ],
+          },
+          children: [],
+        },
+        list: {
+          type: "List",
+          props: {
+            items: [{ text: "Fast", style: { color: "#0b5fff" } }],
+          },
+          children: [],
+        },
+      },
+    };
+
+    expect(validateSoneSpec(spec)).toEqual([]);
+    const node = specToSoneNode(spec) as { type: string };
+    expect(node.type).toBe("column");
+  });
+
+  it("supports TextDefault and PageBreak catalog components", () => {
+    const spec: SoneSpec = {
+      root: "root",
+      elements: {
+        root: {
+          type: "Column",
+          props: {},
+          children: ["defaults", "break", "tail"],
+        },
+        defaults: {
+          type: "TextDefault",
+          props: { size: 14, color: "#222222", lineHeight: 1.4 },
+          children: ["headline"],
+        },
+        headline: {
+          type: "Text",
+          props: { text: "Quarterly Summary" },
+          children: [],
+        },
+        break: {
+          type: "PageBreak",
+          props: { mode: "before" },
+          children: [],
+        },
+        tail: {
+          type: "Text",
+          props: { text: "Page 2 content" },
+          children: [],
+        },
+      },
+    };
+
+    expect(validateSoneSpec(spec)).toEqual([]);
+    const node = specToSoneNode(spec) as { type: string };
+    expect(node.type).toBe("column");
+  });
 });

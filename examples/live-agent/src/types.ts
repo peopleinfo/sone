@@ -5,6 +5,8 @@ export type SoneComponentType =
   | "Row"
   | "Grid"
   | "Text"
+  | "TextDefault"
+  | "PageBreak"
   | "Photo"
   | "Table"
   | "List"
@@ -50,6 +52,9 @@ export interface TextSegment {
 
 export interface BaseStyleProps {
   tag?: string;
+  display?: "none" | "flex" | "contents";
+  direction?: "ltr" | "rtl";
+  boxSizing?: "border-box" | "content-box";
   width?: number | "auto" | `${number}%`;
   height?: number | "auto" | `${number}%`;
   minWidth?: number | `${number}%`;
@@ -72,6 +77,16 @@ export interface BaseStyleProps {
   flexGrow?: number;
   flexShrink?: number;
   flex?: number;
+  flexBasis?: number | "auto" | `${number}%`;
+  flexWrap?: "wrap" | "nowrap" | "wrap-reverse";
+  alignContent?:
+    | "flex-start"
+    | "flex-end"
+    | "center"
+    | "stretch"
+    | "space-between"
+    | "space-around"
+    | "space-evenly";
   alignItems?: "flex-start" | "flex-end" | "center" | "stretch" | "baseline";
   alignSelf?: "flex-start" | "flex-end" | "center" | "stretch" | "baseline";
   justifyContent?:
@@ -81,11 +96,37 @@ export interface BaseStyleProps {
     | "space-between"
     | "space-around"
     | "space-evenly";
+  left?: number | `${number}%`;
+  right?: number | `${number}%`;
+  top?: number | `${number}%`;
+  bottom?: number | `${number}%`;
+  start?: number | `${number}%`;
+  end?: number | `${number}%`;
+  position?: "absolute" | "relative" | "static";
+  overflow?: "visible" | "hidden" | "scroll";
+  pageBreak?: "before" | "after" | "avoid";
+  aspectRatio?: number;
   background?: string;
   borderColor?: string;
   borderWidth?: number;
+  borderTopWidth?: number;
+  borderRightWidth?: number;
+  borderBottomWidth?: number;
+  borderLeftWidth?: number;
   cornerRadius?: number | number[];
+  cornerSmoothing?: number;
+  corner?: "cut" | "round";
   opacity?: number;
+  rotation?: number;
+  translateX?: number;
+  translateY?: number;
+  scale?: number | [number, number];
+  shadows?: string[];
+  filters?: string[];
+  gridColumnStart?: number;
+  gridColumnSpan?: number;
+  gridRowStart?: number;
+  gridRowSpan?: number;
 }
 
 export interface GridProps extends BaseStyleProps {
@@ -106,6 +147,25 @@ export interface TextProps extends BaseStyleProps, TextSegmentStyle {
   hyphenation?: string | boolean;
   autofit?: boolean;
   baseDir?: "ltr" | "rtl" | "auto";
+  indentSize?: number;
+  hangingIndentSize?: number;
+  tabStops?: number[];
+  tabLeader?: string;
+  orientation?: 0 | 90 | 180 | 270;
+}
+
+export interface TextDefaultProps extends TextSegmentStyle {
+  nowrap?: boolean;
+  maxLines?: number;
+  lineBreak?: "greedy" | "knuth-plass";
+  textOverflow?: "clip" | "ellipsis";
+  lineHeight?: number;
+  align?: "left" | "right" | "center" | "justify";
+  indentSize?: number;
+}
+
+export interface PageBreakProps {
+  mode?: "before" | "after" | "avoid";
 }
 
 export interface PhotoProps extends BaseStyleProps {
@@ -135,6 +195,10 @@ export interface PathProps extends BaseStyleProps {
 export interface TableCellSpec extends BaseStyleProps {
   segments?: TextSegment[];
   text?: string;
+  /**
+   * Convenience text style for a single-segment cell. Applied to the generated Text node.
+   */
+  style?: TextSegmentStyle;
   colspan?: number;
   rowspan?: number;
   header?: boolean;
@@ -152,6 +216,10 @@ export interface TableProps extends BaseStyleProps {
 export interface ListItemSpec extends BaseStyleProps {
   segments?: TextSegment[];
   text?: string;
+  /**
+   * Convenience text style for a single-segment list item. Applied to the generated Text node.
+   */
+  style?: TextSegmentStyle;
 }
 
 export interface ListProps extends BaseStyleProps {
@@ -170,6 +238,8 @@ export type SoneElementProps =
   | BaseStyleProps
   | GridProps
   | TextProps
+  | TextDefaultProps
+  | PageBreakProps
   | PhotoProps
   | PathProps
   | TableProps

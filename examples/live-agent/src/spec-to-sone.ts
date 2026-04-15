@@ -4,6 +4,7 @@ import {
   Grid,
   List,
   ListItem,
+  PageBreak,
   Path,
   Photo,
   Row,
@@ -12,6 +13,7 @@ import {
   TableCell,
   TableRow,
   Text,
+  TextDefault,
   type SoneNode,
 } from "sone";
 import { soneCatalog } from "./catalog";
@@ -21,6 +23,7 @@ import type {
   GridProps,
   ListItemSpec,
   ListProps,
+  PageBreakProps,
   PathProps,
   PhotoProps,
   SoneBuildOptions,
@@ -31,6 +34,7 @@ import type {
   TableCellSpec,
   TableProps,
   TextProps,
+  TextDefaultProps,
   TextSegment,
 } from "./types";
 
@@ -38,7 +42,7 @@ const DEFAULT_MAX_DEPTH = 32;
 const DEFAULT_MAX_ELEMENTS = 250;
 const DEFAULT_MAX_DIMENSION = 4096;
 
-const CONTAINER_TYPES = new Set(["Column", "Row", "Grid", "ClipGroup"]);
+const CONTAINER_TYPES = new Set(["Column", "Row", "Grid", "ClipGroup", "TextDefault"]);
 
 const DIMENSION_KEYS = [
   "width",
@@ -279,6 +283,13 @@ function buildElement(
       return applyGridProps(Grid(...children), element.props as GridProps);
     case "Text":
       return applyTextProps(buildText(element.props as TextProps), element.props as TextProps);
+    case "TextDefault":
+      return applyTextDefaultProps(
+        TextDefault(...children),
+        element.props as TextDefaultProps,
+      );
+    case "PageBreak":
+      return applyPageBreakProps(element.props as PageBreakProps);
     case "Photo":
       return applyPhotoProps(element.props as PhotoProps);
     case "Path":
@@ -297,7 +308,9 @@ function buildElement(
 
 function buildText(props: TextProps | TableCellSpec | ListItemSpec) {
   const segments = getTextSegments(props);
-  return Text(...segments.map(segmentToTextChild));
+  const node = Text(...segments.map(segmentToTextChild));
+  applyInlineTextStyle(node, props);
+  return node;
 }
 
 function getTextSegments(props: TextProps | TableCellSpec | ListItemSpec): TextSegment[] {
@@ -321,6 +334,29 @@ function applyTextProps(node: ReturnType<typeof Text>, props: TextProps) {
   return node;
 }
 
+function applyTextDefaultProps(
+  node: ReturnType<typeof TextDefault>,
+  props: TextDefaultProps,
+) {
+  assignProps(node, props);
+  return node;
+}
+
+function applyPageBreakProps(props: PageBreakProps) {
+  const mode = props.mode ?? "before";
+  return PageBreak().pageBreak(mode);
+}
+
+function applyInlineTextStyle(
+  node: ReturnType<typeof Text>,
+  props: TextProps | TableCellSpec | ListItemSpec,
+) {
+  const styleValue = (props as { style?: unknown }).style;
+  if (styleValue && typeof styleValue === "object" && !Array.isArray(styleValue)) {
+    assignProps(node, styleValue as object);
+  }
+}
+
 function applyPhotoProps(props: PhotoProps) {
   const node = Photo(props.src);
   assignProps(node, omitKeys(props, ["src"]));
@@ -342,7 +378,7 @@ function applyTableProps(props: TableProps) {
           assignProps(text, { weight: "bold" });
         }
         const tableCell = TableCell(text);
-        assignProps(tableCell, omitKeys(cell, ["segments", "text", "header"]));
+        assignProps(tableCell, omitKeys(cell, ["segments", "text", "style", "header"]));
         return tableCell;
       }),
     ),
@@ -356,7 +392,7 @@ function applyListProps(props: ListProps) {
   const node = List(
     ...props.items.map((item: ListItemSpec) => {
       const listItem = ListItem(buildText(item));
-      assignProps(listItem, omitKeys(item, ["segments", "text"]));
+      assignProps(listItem, omitKeys(item, ["segments", "text", "style"]));
       return listItem;
     }),
   );
@@ -390,11 +426,15 @@ function normalizeSoneProps(props: object) {
   for (const [key, value] of Object.entries(props)) {
     if (value === undefined) continue;
     if (key === "background") {
-      normalized.background = [value];
+      normalized.background = Array.isArray(value) ? value : [value];
       continue;
     }
     if (key === "cornerRadius" && typeof value === "number") {
       normalized.cornerRadius = [value];
+      continue;
+    }
+    if (key === "scale" && typeof value === "number") {
+      normalized.scale = [value, value];
       continue;
     }
     if (key === "font" && typeof value === "string") {
