@@ -133,4 +133,41 @@ describe("specToSoneNode", () => {
     const node = specToSoneNode(spec) as { type: string };
     expect(node.type).toBe("column");
   });
+
+  it("accepts compatibility aliases for padding and shadow props", () => {
+    const spec: SoneSpec = {
+      root: "root",
+      elements: {
+        root: {
+          type: "Column",
+          props: {
+            paddingVertical: 12,
+            paddingHorizontal: 20,
+            boxShadow: "0 6px 20px rgba(0,0,0,0.2)",
+          },
+          children: ["buttonColumn"],
+        },
+        buttonColumn: {
+          type: "Column",
+          props: {
+            paddingVertical: 10,
+            paddingHorizontal: 16,
+            boxShadow: "0 4px 12px rgba(0,0,0,0.12)",
+            background: "#0b5fff",
+            cornerRadius: 12,
+          },
+          children: ["label"],
+        },
+        label: {
+          type: "Text",
+          props: { text: "Continue", color: "#ffffff", align: "center" },
+          children: [],
+        },
+      },
+    };
+
+    expect(validateSoneSpec(spec)).toEqual([]);
+    const node = specToSoneNode(spec) as { type: string };
+    expect(node.type).toBe("column");
+  });
 });

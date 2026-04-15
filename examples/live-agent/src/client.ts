@@ -316,24 +316,172 @@ function tryParseSpecObject(text: string): SoneSpec | null {
   return null;
 }
 
+function recoverMissingRoot(spec: SoneSpec | null): SoneSpec | null {
+  if (!spec || typeof spec !== "object" || typeof spec.elements !== "object" || !spec.elements) {
+    return null;
+  }
+
+  if (typeof spec.root === "string" && spec.root.length > 0 && spec.elements[spec.root]) {
+    return spec;
+  }
+
+  if (spec.elements.root) {
+    return { ...spec, root: "root" };
+  }
+
+  const elementIds = Object.keys(spec.elements);
+  if (elementIds.length === 1) {
+    return { ...spec, root: elementIds[0] as string };
+  }
+
+  return spec;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeSpecStructure(spec: SoneSpec | null): SoneSpec | null {
+  if (!spec || !isRecord(spec) || !isRecord(spec.elements)) {
+    return spec;
+  }
+
+  const sourceElements = spec.elements as Record<string, unknown>;
+  const normalizedElements: SoneSpec["elements"] = {};
+  const createdIds = new Set<string>(Object.keys(sourceElements));
+
+  function nextUniqueId(base: string) {
+    let candidate = base;
+    let index = 1;
+    while (createdIds.has(candidate) || normalizedElements[candidate]) {
+      candidate = `${base}-${index}`;
+      index += 1;
+    }
+    createdIds.add(candidate);
+    return candidate;
+  }
+
+  function ingestElement(id: string, raw: unknown) {
+    if (!isRecord(raw) || typeof raw.type !== "string") {
+      return;
+    }
+
+    const props = isRecord(raw.props) ? raw.props : {};
+    const rawChildren = Array.isArray(raw.children) ? raw.children : [];
+    const children: string[] = [];
+
+    rawChildren.forEach((child, index) => {
+      if (typeof child === "string") {
+        children.push(child);
+        return;
+      }
+
+      if (!isRecord(child) || typeof child.type !== "string") {
+        return;
+      }
+
+      const preferredId =
+        typeof child.id === "string" && child.id.length > 0
+          ? child.id
+          : `${id}-child-${index + 1}`;
+
+      if (sourceElements[preferredId] && !normalizedElements[preferredId]) {
+        children.push(preferredId);
+        return;
+      }
+
+      const childId = nextUniqueId(preferredId);
+      ingestElement(childId, child);
+      if (normalizedElements[childId]) {
+        children.push(childId);
+      }
+    });
+
+    normalizedElements[id] = {
+      type: raw.type as SoneSpec["elements"][string]["type"],
+      props: props as SoneSpec["elements"][string]["props"],
+      children,
+    };
+  }
+
+  for (const [id, rawElement] of Object.entries(sourceElements)) {
+    ingestElement(id, rawElement);
+  }
+
+  const normalizedSpec: SoneSpec = {
+    root: spec.root,
+    elements: normalizedElements,
+  };
+  return normalizedSpec;
+}
+
 function parseOpenAiCompatSpec(text: string): SoneSpec {
   const normalized = stripMarkdownFences(text);
 
   const compiler = createSpecStreamCompiler<SoneSpec>();
   compiler.push(normalized.endsWith("\n") ? normalized : `${normalized}\n`);
-  const compiled = compiler.getResult();
+  const compiled = normalizeSpecStructure(recoverMissingRoot(compiler.getResult()));
   if (compiled) {
     return compiled;
   }
 
-  const parsed = tryParseSpecObject(normalized);
+  const parsed = normalizeSpecStructure(recoverMissingRoot(tryParseSpecObject(normalized)));
   if (parsed) {
     return parsed;
+  }
+
+  const extractedJsonl = extractJsonlPatchLines(normalized);
+  if (extractedJsonl) {
+    const extractedCompiler = createSpecStreamCompiler<SoneSpec>();
+    extractedCompiler.push(
+      extractedJsonl.endsWith("\n") ? extractedJsonl : `${extractedJsonl}\n`,
+    );
+    const extractedCompiled = normalizeSpecStructure(
+      recoverMissingRoot(extractedCompiler.getResult()),
+    );
+    if (extractedCompiled) {
+      return extractedCompiled;
+    }
   }
 
   throw new Error(
     "OpenAI-compatible endpoint did not return valid JSONL patches or a Sone spec object.",
   );
+}
+
+function extractJsonlPatchLines(text: string): string | null {
+  const candidates = [
+    text,
+    text.replace(/\\r\\n/g, "\n").replace(/\\n/g, "\n"),
+  ];
+
+  for (const candidate of candidates) {
+    const lines = candidate
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+    const patchLines: string[] = [];
+    for (const line of lines) {
+      if (!line.startsWith("{") || !line.endsWith("}")) {
+        continue;
+      }
+
+      try {
+        const parsed = JSON.parse(line) as { op?: unknown; path?: unknown };
+        if (typeof parsed.op === "string" && typeof parsed.path === "string") {
+          patchLines.push(line);
+        }
+      } catch {
+        // ignore non-JSON lines
+      }
+    }
+
+    if (patchLines.length > 0) {
+      return patchLines.join("\n");
+    }
+  }
+  return null;
 }
 
 async function requestG4fSpec(

@@ -425,6 +425,28 @@ function normalizeSoneProps(props: object) {
   const normalized: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(props)) {
     if (value === undefined) continue;
+    if (key === "paddingVertical") {
+      if (normalized.paddingTop === undefined) {
+        normalized.paddingTop = value;
+      }
+      if (normalized.paddingBottom === undefined) {
+        normalized.paddingBottom = value;
+      }
+      continue;
+    }
+    if (key === "paddingHorizontal") {
+      if (normalized.paddingLeft === undefined) {
+        normalized.paddingLeft = value;
+      }
+      if (normalized.paddingRight === undefined) {
+        normalized.paddingRight = value;
+      }
+      continue;
+    }
+    if (key === "boxShadow") {
+      normalized.shadows = Array.isArray(value) ? value : [value];
+      continue;
+    }
     if (key === "background") {
       normalized.background = Array.isArray(value) ? value : [value];
       continue;

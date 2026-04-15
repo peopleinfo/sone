@@ -121,6 +121,147 @@ describe("createGenerationTextStream", () => {
     expect(spec?.elements.title.type).toBe("Text");
   });
 
+  it("recovers missing root from OpenAI-compatible patch output", async () => {
+    const openAiConfig: StoredLlmConfig = {
+      mode: "openai-compatible",
+      url: "http://localhost:11434/v1/chat/completions",
+      model: "llama3.2",
+      apiKey: "",
+    };
+
+    const fetchMock: typeof fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content:
+                  `{"op":"add","path":"/elements/root","value":{"type":"Column","props":{"padding":20},"children":["title"]}}\n` +
+                  `{"op":"add","path":"/elements/title","value":{"type":"Text","props":{"segments":[{"text":"Recovered root"}]},"children":[]}}`,
+              },
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      )) as typeof fetch;
+
+    const spec = await generateSpec(
+      { prompt: "generate something" },
+      undefined,
+      { config: openAiConfig, fetch: fetchMock },
+    );
+
+    expect(spec?.root).toBe("root");
+    expect(spec?.elements.title.type).toBe("Text");
+  });
+
+  it("extracts JSONL patches when model adds non-patch prose lines", async () => {
+    const openAiConfig: StoredLlmConfig = {
+      mode: "openai-compatible",
+      url: "http://localhost:11434/v1/chat/completions",
+      model: "qwen3.5-flash",
+      apiKey: "",
+    };
+
+    const fetchMock: typeof fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content:
+                  "I will build a button spec now.\\n" +
+                  "{\"op\":\"add\",\"path\":\"/root\",\"value\":\"buttonContainer\"}\\n" +
+                  "{\"op\":\"add\",\"path\":\"/elements/buttonContainer\",\"value\":{\"type\":\"Column\",\"props\":{\"padding\":16},\"children\":[\"label\"]}}\\n" +
+                  "{\"op\":\"add\",\"path\":\"/elements/label\",\"value\":{\"type\":\"Text\",\"props\":{\"text\":\"Get Started\"},\"children\":[]}}\\n" +
+                  "Done.",
+              },
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      )) as typeof fetch;
+
+    const spec = await generateSpec(
+      { prompt: "Design fancy button" },
+      undefined,
+      { config: openAiConfig, fetch: fetchMock },
+    );
+
+    expect(spec?.root).toBe("buttonContainer");
+    expect(spec?.elements.label.type).toBe("Text");
+  });
+
+  it("normalizes missing children arrays and inline child objects", async () => {
+    const openAiConfig: StoredLlmConfig = {
+      mode: "openai-compatible",
+      url: "http://localhost:11434/v1/chat/completions",
+      model: "qwen3.5-flash",
+      apiKey: "",
+    };
+
+    const fetchMock: typeof fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  root: "invoice-root",
+                  elements: {
+                    "invoice-root": {
+                      type: "Column",
+                      props: { gap: 12 },
+                      children: [
+                        "invoice-title",
+                        {
+                          type: "Row",
+                          props: { justifyContent: "space-between" },
+                          children: [
+                            { type: "Text", props: { text: "Subtotal" } },
+                            { type: "Text", props: { text: "$120.00" } },
+                          ],
+                        },
+                      ],
+                    },
+                    "invoice-title": {
+                      type: "Text",
+                      props: { text: "Invoice #1001" },
+                    },
+                  },
+                }),
+              },
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      )) as typeof fetch;
+
+    const spec = await generateSpec(
+      { prompt: "Generate invoice layout" },
+      undefined,
+      { config: openAiConfig, fetch: fetchMock },
+    );
+
+    expect(spec?.root).toBe("invoice-root");
+    expect(spec?.elements["invoice-title"]?.children).toEqual([]);
+    const inlineRowId = spec?.elements["invoice-root"]?.children?.find((id) =>
+      String(id).startsWith("invoice-root-child-"),
+    );
+    expect(inlineRowId).toBeTruthy();
+    expect(spec?.elements[String(inlineRowId)]?.type).toBe("Row");
+    expect(spec?.elements[String(inlineRowId)]?.children).toHaveLength(2);
+  });
+
   it("persists stored LLM config to storage", () => {
     const values = new Map<string, string>();
     const storage = {

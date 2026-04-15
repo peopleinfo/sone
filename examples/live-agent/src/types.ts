@@ -66,6 +66,8 @@ export interface BaseStyleProps {
   paddingRight?: number | `${number}%`;
   paddingBottom?: number | `${number}%`;
   paddingLeft?: number | `${number}%`;
+  paddingVertical?: number | `${number}%`;
+  paddingHorizontal?: number | `${number}%`;
   margin?: number | "auto" | `${number}%`;
   marginTop?: number | "auto" | `${number}%`;
   marginRight?: number | "auto" | `${number}%`;
@@ -122,6 +124,7 @@ export interface BaseStyleProps {
   translateY?: number;
   scale?: number | [number, number];
   shadows?: string[];
+  boxShadow?: string | string[];
   filters?: string[];
   gridColumnStart?: number;
   gridColumnSpan?: number;
