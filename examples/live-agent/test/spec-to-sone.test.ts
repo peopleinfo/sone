@@ -170,4 +170,181 @@ describe("specToSoneNode", () => {
     const node = specToSoneNode(spec) as { type: string };
     expect(node.type).toBe("column");
   });
+
+  it("accepts CSS-like borderTop alias on container props", () => {
+    const spec: SoneSpec = {
+      root: "root",
+      elements: {
+        root: {
+          type: "Column",
+          props: {
+            borderTop: "1px solid #e5e7eb",
+            padding: 12,
+          },
+          children: ["title"],
+        },
+        title: {
+          type: "Text",
+          props: { text: "Invoice", size: 16, weight: "bold" },
+          children: [],
+        },
+      },
+    };
+
+    expect(validateSoneSpec(spec)).toEqual([]);
+    const node = specToSoneNode(spec) as { type: string; props?: Record<string, unknown> };
+    expect(node.type).toBe("column");
+    expect(node.props?.borderTopWidth).toBe(1);
+    expect(node.props?.borderColor).toBe("#e5e7eb");
+  });
+
+  it("accepts container font and borderBottom compatibility aliases", () => {
+    const spec: SoneSpec = {
+      root: "root",
+      elements: {
+        root: {
+          type: "Column",
+          props: {
+            font: "Inter",
+            borderBottom: "2px solid rgba(0,0,0,0.12)",
+          },
+          children: ["title"],
+        },
+        title: {
+          type: "Text",
+          props: { text: "Fees", weight: "bold" },
+          children: [],
+        },
+      },
+    };
+
+    expect(validateSoneSpec(spec)).toEqual([]);
+    const node = specToSoneNode(spec) as { props?: Record<string, unknown> };
+    expect(node.props?.font).toEqual(["Inter"]);
+    expect(node.props?.borderBottomWidth).toBe(2);
+    expect(node.props?.borderColor).toBe("rgba(0,0,0,0.12)");
+  });
+
+  it("flattens nested table spacing arrays from model output", () => {
+    const spec: SoneSpec = {
+      root: "root",
+      elements: {
+        root: {
+          type: "Column",
+          props: {},
+          children: ["fee-table"],
+        },
+        "fee-table": {
+          type: "Table",
+          props: {
+            spacing: [[8], [12, [16]]],
+            rows: [
+              { cells: [{ text: "Item", header: true }, { text: "Amount", header: true }] },
+              { cells: [{ text: "Service Fee" }, { text: "$20.00" }] },
+            ],
+          },
+          children: [],
+        },
+      },
+    };
+
+    expect(validateSoneSpec(spec)).toEqual([]);
+    const node = specToSoneNode(spec) as { type: string };
+    expect(node.type).toBe("column");
+  });
+
+  it("reconciles child references across id naming styles", () => {
+    const spec: SoneSpec = {
+      root: "root",
+      elements: {
+        root: {
+          type: "Column",
+          props: { gap: 16 },
+          children: ["header", "info-grid", "table-section", "footer"],
+        },
+        header: {
+          type: "Text",
+          props: { text: "Invoice" },
+          children: [],
+        },
+        infoGrid: {
+          type: "Row",
+          props: { justifyContent: "space-between" },
+          children: [],
+        },
+        tableSection: {
+          type: "Column",
+          props: { gap: 8 },
+          children: ["totals"],
+        },
+        totals: {
+          type: "Column",
+          props: {},
+          children: ["subtotal", "tax", "grand-total"],
+        },
+        subtotal: {
+          type: "Text",
+          props: { text: "Subtotal" },
+          children: [],
+        },
+        tax: {
+          type: "Text",
+          props: { text: "Tax" },
+          children: [],
+        },
+        grandTotal: {
+          type: "Text",
+          props: { text: "Total" },
+          children: [],
+        },
+        footer: {
+          type: "Text",
+          props: { text: "Thanks" },
+          children: [],
+        },
+      },
+    };
+
+    expect(validateSoneSpec(spec)).toEqual([]);
+    const node = specToSoneNode(spec) as { type: string };
+    expect(node.type).toBe("column");
+  });
+
+  it("normalizes container text props and fontWeight aliases in table styles", () => {
+    const spec: SoneSpec = {
+      root: "root",
+      elements: {
+        root: {
+          type: "Column",
+          props: {},
+          children: ["billing-label", "fee-table"],
+        },
+        "billing-label": {
+          type: "Row",
+          props: { text: "Billing Information" },
+          children: [],
+        },
+        "fee-table": {
+          type: "Table",
+          props: {
+            spacing: [[6], [8]],
+            rows: [
+              { cells: [{ text: "Item", header: true }, { text: "Amount", header: true }] },
+              {
+                cells: [
+                  { text: "Total", style: { fontWeight: "bold" } },
+                  { text: "$120.00", style: { fontWeight: 700 } },
+                ],
+              },
+            ],
+          },
+          children: [],
+        },
+      },
+    };
+
+    expect(validateSoneSpec(spec)).toEqual([]);
+    const node = specToSoneNode(spec) as { type: string };
+    expect(node.type).toBe("column");
+  });
 });

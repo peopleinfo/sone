@@ -5,6 +5,8 @@ import {
 } from "@json-render/core";
 import { soneCatalog } from "@/catalog";
 import { createFixtureJsonlStream, createSpecJsonlStream } from "@/fixture-stream";
+import { prepareSpec } from "@/spec-normalize";
+import { validateSoneSpec } from "@/spec-to-sone";
 import type { SoneSpec } from "@/types";
 
 export const DEFAULT_CHAT_ENDPOINT = "http://localhost:8080/api/agent/chat";
@@ -18,13 +20,21 @@ export const DEFAULT_OPENAI_TEST_MESSAGE = "Reply with OK.";
 const STORAGE_LLM_CONFIG = "sone.live-agent.llm-config";
 const OPENAI_COMPAT_CUSTOM_RULES = [
   "Output ONLY JSONL patches. No prose, markdown, code fences, or explanations.",
+  "Return schema-valid Sone patches on first attempt. Invalid keys or malformed shapes are not allowed.",
   "Generate concise Sone layouts that fit within a single card or image canvas.",
   "Use the custom Sone catalog exactly: component type must be one of Column, Row, Grid, Text, TextDefault, PageBreak, Photo, Table, List, Path, ClipGroup.",
   "The spec field root must exactly match an existing key under elements (e.g. root \"root\" with /elements/root). Never set root to a name you did not add under elements.",
   "Prefer Column or Row as the root layout container with a simple id like root.",
+  "Each element value MUST have exactly this shape: {\"type\":\"<CatalogComponent>\",\"props\":{},\"children\":[]}. Never omit children or props.",
+  "children must be string ids only. Never put objects inside children.",
   "On Column, Row, Grid, Photo, Path, ClipGroup, Table cells, and List items: use background for fills, not color. Use Text.props.segments[].style.color for text color.",
+  "Only Text and table/list cell text styles may use text-related keys such as text, segments, color, weight, font, align.",
   "Use Table.rows/cells and List.items instead of wrapper nodes.",
+  "Never emit unknown CSS keys like fontWeight, borderBottom (use allowed schema keys instead).",
+  "Patch ordering requirement: /root first, then /elements/root, then remaining /elements/*.",
+  "Minimal valid starter example: {\"op\":\"add\",\"path\":\"/root\",\"value\":\"root\"} then {\"op\":\"add\",\"path\":\"/elements/root\",\"value\":{\"type\":\"Column\",\"props\":{},\"children\":[]}}",
 ] as const;
+const MAX_AUTO_REPAIR_ATTEMPTS = 1;
 
 export type LlmBackendMode = "sone-chat" | "g4f" | "openai-compatible";
 
@@ -224,6 +234,28 @@ function createOpenAiCompatSystemPrompt() {
   });
 }
 
+function buildRepairPrompt(
+  payload: GeneratePayload,
+  reason: string,
+  attempt: number,
+) {
+  const issues = reason
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 12)
+    .map((line) => `- ${line}`)
+    .join("\n");
+  return [
+    `Your previous output was invalid for Sone (attempt ${attempt}).`,
+    "Fix it by returning ONLY JSONL patches.",
+    "Do not include prose, markdown, or explanations.",
+    `Original request: ${payload.prompt}`,
+    "Validation errors:",
+    issues || "- Unknown validation error",
+  ].join("\n");
+}
+
 function buildHeaders(config: StoredLlmConfig) {
   const headers: Record<string, string> = {
     accept: "application/json",
@@ -316,116 +348,17 @@ function tryParseSpecObject(text: string): SoneSpec | null {
   return null;
 }
 
-function recoverMissingRoot(spec: SoneSpec | null): SoneSpec | null {
-  if (!spec || typeof spec !== "object" || typeof spec.elements !== "object" || !spec.elements) {
-    return null;
-  }
-
-  if (typeof spec.root === "string" && spec.root.length > 0 && spec.elements[spec.root]) {
-    return spec;
-  }
-
-  if (spec.elements.root) {
-    return { ...spec, root: "root" };
-  }
-
-  const elementIds = Object.keys(spec.elements);
-  if (elementIds.length === 1) {
-    return { ...spec, root: elementIds[0] as string };
-  }
-
-  return spec;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function normalizeSpecStructure(spec: SoneSpec | null): SoneSpec | null {
-  if (!spec || !isRecord(spec) || !isRecord(spec.elements)) {
-    return spec;
-  }
-
-  const sourceElements = spec.elements as Record<string, unknown>;
-  const normalizedElements: SoneSpec["elements"] = {};
-  const createdIds = new Set<string>(Object.keys(sourceElements));
-
-  function nextUniqueId(base: string) {
-    let candidate = base;
-    let index = 1;
-    while (createdIds.has(candidate) || normalizedElements[candidate]) {
-      candidate = `${base}-${index}`;
-      index += 1;
-    }
-    createdIds.add(candidate);
-    return candidate;
-  }
-
-  function ingestElement(id: string, raw: unknown) {
-    if (!isRecord(raw) || typeof raw.type !== "string") {
-      return;
-    }
-
-    const props = isRecord(raw.props) ? raw.props : {};
-    const rawChildren = Array.isArray(raw.children) ? raw.children : [];
-    const children: string[] = [];
-
-    rawChildren.forEach((child, index) => {
-      if (typeof child === "string") {
-        children.push(child);
-        return;
-      }
-
-      if (!isRecord(child) || typeof child.type !== "string") {
-        return;
-      }
-
-      const preferredId =
-        typeof child.id === "string" && child.id.length > 0
-          ? child.id
-          : `${id}-child-${index + 1}`;
-
-      if (sourceElements[preferredId] && !normalizedElements[preferredId]) {
-        children.push(preferredId);
-        return;
-      }
-
-      const childId = nextUniqueId(preferredId);
-      ingestElement(childId, child);
-      if (normalizedElements[childId]) {
-        children.push(childId);
-      }
-    });
-
-    normalizedElements[id] = {
-      type: raw.type as SoneSpec["elements"][string]["type"],
-      props: props as SoneSpec["elements"][string]["props"],
-      children,
-    };
-  }
-
-  for (const [id, rawElement] of Object.entries(sourceElements)) {
-    ingestElement(id, rawElement);
-  }
-
-  const normalizedSpec: SoneSpec = {
-    root: spec.root,
-    elements: normalizedElements,
-  };
-  return normalizedSpec;
-}
-
 function parseOpenAiCompatSpec(text: string): SoneSpec {
   const normalized = stripMarkdownFences(text);
 
   const compiler = createSpecStreamCompiler<SoneSpec>();
   compiler.push(normalized.endsWith("\n") ? normalized : `${normalized}\n`);
-  const compiled = normalizeSpecStructure(recoverMissingRoot(compiler.getResult()));
+  const compiled = prepareSpec(compiler.getResult());
   if (compiled) {
     return compiled;
   }
 
-  const parsed = normalizeSpecStructure(recoverMissingRoot(tryParseSpecObject(normalized)));
+  const parsed = prepareSpec(tryParseSpecObject(normalized));
   if (parsed) {
     return parsed;
   }
@@ -436,9 +369,7 @@ function parseOpenAiCompatSpec(text: string): SoneSpec {
     extractedCompiler.push(
       extractedJsonl.endsWith("\n") ? extractedJsonl : `${extractedJsonl}\n`,
     );
-    const extractedCompiled = normalizeSpecStructure(
-      recoverMissingRoot(extractedCompiler.getResult()),
-    );
+    const extractedCompiled = prepareSpec(extractedCompiler.getResult());
     if (extractedCompiled) {
       return extractedCompiled;
     }
@@ -489,7 +420,16 @@ async function requestG4fSpec(
   config: StoredLlmConfig,
   runtime: RuntimeOptions,
 ): Promise<SoneSpec> {
-  const messages = [
+  return requestOpenAiLikeSpec(payload, config, runtime, config.model || DEFAULT_G4F_MODEL);
+}
+
+async function requestOpenAiLikeSpec(
+  payload: GeneratePayload,
+  config: StoredLlmConfig,
+  runtime: RuntimeOptions,
+  modelOverride?: string,
+): Promise<SoneSpec> {
+  const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
     {
       role: "system" as const,
       content: createOpenAiCompatSystemPrompt(),
@@ -500,31 +440,69 @@ async function requestG4fSpec(
     },
   ];
 
-  const body: Record<string, unknown> = {
-    model: config.model || DEFAULT_G4F_MODEL,
-    messages,
-    temperature: 0.4,
-    stream: false,
-  };
+  for (let attempt = 0; attempt <= MAX_AUTO_REPAIR_ATTEMPTS; attempt += 1) {
+    const body: Record<string, unknown> = {
+      messages,
+      temperature: 0.4,
+      stream: false,
+    };
+    const model = modelOverride || config.model;
+    if (model) {
+      body.model = model;
+    }
 
-  const response = await ensureFetch(runtime.fetch)(config.url, {
-    method: "POST",
-    headers: buildHeaders(config),
-    body: JSON.stringify(body),
-    signal: runtime.signal,
-  });
+    const response = await ensureFetch(runtime.fetch)(config.url, {
+      method: "POST",
+      headers: buildHeaders(config),
+      body: JSON.stringify(body),
+      signal: runtime.signal,
+    });
 
-  if (!response.ok) {
-    throw new Error(await readJsonError(response));
+    if (!response.ok) {
+      throw new Error(await readJsonError(response));
+    }
+
+    const data = (await response.json()) as OpenAiCompatResponse;
+    const content = extractAssistantText(data);
+    if (!content.trim()) {
+      throw new Error("OpenAI-compatible endpoint returned an empty assistant message.");
+    }
+
+    messages.push({ role: "assistant", content });
+
+    try {
+      const spec = parseOpenAiCompatSpec(content);
+      const issues = validateSoneSpec(spec);
+      if (issues.length === 0) {
+        return spec;
+      }
+      if (attempt >= MAX_AUTO_REPAIR_ATTEMPTS) {
+        throw new Error(issues.map((issue) => `${issue.path}: ${issue.message}`).join("\n"));
+      }
+      messages.push({
+        role: "user",
+        content: buildRepairPrompt(
+          payload,
+          issues.map((issue) => `${issue.path}: ${issue.message}`).join("\n"),
+          attempt + 1,
+        ),
+      });
+    } catch (error) {
+      if (attempt >= MAX_AUTO_REPAIR_ATTEMPTS) {
+        throw error;
+      }
+      messages.push({
+        role: "user",
+        content: buildRepairPrompt(
+          payload,
+          error instanceof Error ? error.message : String(error),
+          attempt + 1,
+        ),
+      });
+    }
   }
 
-  const data = (await response.json()) as OpenAiCompatResponse;
-  const content = extractAssistantText(data);
-  if (!content.trim()) {
-    throw new Error("g4f endpoint returned an empty assistant message.");
-  }
-
-  return parseOpenAiCompatSpec(content);
+  throw new Error("OpenAI-compatible endpoint did not produce a valid spec.");
 }
 
 async function requestOpenAiCompatSpec(
@@ -532,47 +510,7 @@ async function requestOpenAiCompatSpec(
   config: StoredLlmConfig,
   runtime: RuntimeOptions,
 ): Promise<SoneSpec> {
-  const messages = [
-    {
-      role: "system" as const,
-      content: createOpenAiCompatSystemPrompt(),
-    },
-    {
-      role: "user" as const,
-      content: buildPatchOnlyUserPrompt(payload),
-    },
-  ];
-
-  const body: Record<string, unknown> = {
-    messages,
-    temperature: 0.4,
-    stream: false,
-  };
-
-  if (config.model) {
-    body.model = config.model;
-  }
-
-  const response = await ensureFetch(runtime.fetch)(config.url, {
-    method: "POST",
-    headers: buildHeaders(config),
-    body: JSON.stringify(body),
-    signal: runtime.signal,
-  });
-
-  if (!response.ok) {
-    throw new Error(await readJsonError(response));
-  }
-
-  const data = (await response.json()) as OpenAiCompatResponse;
-  const content = extractAssistantText(data);
-  if (!content.trim()) {
-    throw new Error(
-      "OpenAI-compatible endpoint returned an empty assistant message.",
-    );
-  }
-
-  return parseOpenAiCompatSpec(content);
+  return requestOpenAiLikeSpec(payload, config, runtime);
 }
 
 export async function testLlmConnection(
@@ -710,11 +648,14 @@ export async function streamSpec(
 
       const { result, newPatches } = compiler.push(value);
       if (newPatches.length > 0) {
-        callbacks.onSpec(result ?? null);
+        const prepared = prepareSpec(result);
+        callbacks.onSpec(prepared ?? result ?? null);
       }
     }
 
-    callbacks.onSpec(compiler.getResult() ?? null);
+    const finalResult = compiler.getResult();
+    const preparedFinal = prepareSpec(finalResult);
+    callbacks.onSpec(preparedFinal ?? finalResult ?? null);
   } catch (error) {
     callbacks.onError?.(error instanceof Error ? error.message : String(error));
     throw error;

@@ -109,8 +109,11 @@ export interface BaseStyleProps {
   pageBreak?: "before" | "after" | "avoid";
   aspectRatio?: number;
   background?: string;
+  font?: FontValue;
   borderColor?: string;
   borderWidth?: number;
+  borderTop?: number | string;
+  borderBottom?: number | string;
   borderTopWidth?: number;
   borderRightWidth?: number;
   borderBottomWidth?: number;

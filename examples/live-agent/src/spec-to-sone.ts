@@ -17,6 +17,7 @@ import {
   type SoneNode,
 } from "sone";
 import { soneCatalog } from "./catalog";
+import { prepareSpec } from "./spec-normalize";
 import type {
   BaseStyleProps,
   ClipGroupProps,
@@ -68,7 +69,8 @@ export function validateSoneSpec(
   options: SoneBuildOptions = {},
 ): SoneSpecValidationIssue[] {
   const issues: SoneSpecValidationIssue[] = [];
-  const catalogResult = soneCatalog.validate(spec);
+  const prepared = prepareSpec(spec);
+  const catalogResult = soneCatalog.validate(prepared ?? spec);
   if (!catalogResult.success) {
     for (const issue of catalogResult.error?.issues ?? []) {
       issues.push({
@@ -128,7 +130,7 @@ export function buildSoneNode(
   options: SoneBuildOptions = {},
 ): SoneBuildResult {
   assertValidSoneSpec(spec, options);
-  const data = spec as SoneSpec;
+  const data = prepareSpec(spec) ?? (spec as SoneSpec);
   return {
     node: buildElement(data.root, data, 0, options),
     issues: [],
@@ -447,6 +449,36 @@ function normalizeSoneProps(props: object) {
       normalized.shadows = Array.isArray(value) ? value : [value];
       continue;
     }
+    if (key === "borderTop") {
+      if (typeof value === "number") {
+        normalized.borderTopWidth = value;
+      } else if (typeof value === "string") {
+        const parsedWidth = parseBorderWidth(value);
+        if (parsedWidth !== null) {
+          normalized.borderTopWidth = parsedWidth;
+        }
+        const parsedColor = parseBorderColor(value);
+        if (parsedColor && normalized.borderColor === undefined) {
+          normalized.borderColor = parsedColor;
+        }
+      }
+      continue;
+    }
+    if (key === "borderBottom") {
+      if (typeof value === "number") {
+        normalized.borderBottomWidth = value;
+      } else if (typeof value === "string") {
+        const parsedWidth = parseBorderWidth(value);
+        if (parsedWidth !== null) {
+          normalized.borderBottomWidth = parsedWidth;
+        }
+        const parsedColor = parseBorderColor(value);
+        if (parsedColor && normalized.borderColor === undefined) {
+          normalized.borderColor = parsedColor;
+        }
+      }
+      continue;
+    }
     if (key === "background") {
       normalized.background = Array.isArray(value) ? value : [value];
       continue;
@@ -466,6 +498,22 @@ function normalizeSoneProps(props: object) {
     normalized[key] = value;
   }
   return normalized;
+}
+
+function parseBorderWidth(borderValue: string): number | null {
+  const widthMatch = borderValue.match(/-?\d*\.?\d+/);
+  if (!widthMatch) {
+    return null;
+  }
+  const width = Number(widthMatch[0]);
+  return Number.isFinite(width) ? width : null;
+}
+
+function parseBorderColor(borderValue: string): string | null {
+  const colorMatch = borderValue.match(
+    /(#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})|rgba?\([^)]+\)|hsla?\([^)]+\))/,
+  );
+  return colorMatch?.[1] ?? null;
 }
 
 function omitKeys<T extends object, K extends keyof T>(

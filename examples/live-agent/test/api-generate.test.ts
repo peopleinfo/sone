@@ -198,6 +198,43 @@ describe("createGenerationTextStream", () => {
     expect(spec?.elements.label.type).toBe("Text");
   });
 
+  it("auto-retries once with validation feedback on invalid first response", async () => {
+    const openAiConfig: StoredLlmConfig = {
+      mode: "openai-compatible",
+      url: "http://localhost:11434/v1/chat/completions",
+      model: "qwen3.5-flash",
+      apiKey: "",
+    };
+
+    let callCount = 0;
+    const fetchMock: typeof fetch = (async () => {
+      callCount += 1;
+      const content =
+        callCount === 1
+          ? `{"op":"add","path":"/root","value":"root"}\n{"op":"add","path":"/elements/root","value":{"type":"Column","props":{"totallyUnknown":true},"children":[]}}`
+          : `{"op":"add","path":"/root","value":"root"}\n{"op":"add","path":"/elements/root","value":{"type":"Column","props":{},"children":["title"]}}\n{"op":"add","path":"/elements/title","value":{"type":"Text","props":{"text":"Recovered"},"children":[]}}`;
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content } }],
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }) as typeof fetch;
+
+    const spec = await generateSpec(
+      { prompt: "Generate a simple title card" },
+      undefined,
+      { config: openAiConfig, fetch: fetchMock },
+    );
+
+    expect(callCount).toBe(2);
+    expect(spec?.root).toBe("root");
+    expect(spec?.elements.title.type).toBe("Text");
+  });
+
   it("normalizes missing children arrays and inline child objects", async () => {
     const openAiConfig: StoredLlmConfig = {
       mode: "openai-compatible",
@@ -260,6 +297,70 @@ describe("createGenerationTextStream", () => {
     expect(inlineRowId).toBeTruthy();
     expect(spec?.elements[String(inlineRowId)]?.type).toBe("Row");
     expect(spec?.elements[String(inlineRowId)]?.children).toHaveLength(2);
+  });
+
+  it("reconciles child references with different id styles", async () => {
+    const openAiConfig: StoredLlmConfig = {
+      mode: "openai-compatible",
+      url: "http://localhost:11434/v1/chat/completions",
+      model: "qwen3.5-flash",
+      apiKey: "",
+    };
+
+    const fetchMock: typeof fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  root: "root",
+                  elements: {
+                    root: {
+                      type: "Column",
+                      props: { gap: 12 },
+                      children: ["header", "table-section", "footer"],
+                    },
+                    header: {
+                      type: "Text",
+                      props: { text: "Invoice" },
+                      children: [],
+                    },
+                    tableSection: {
+                      type: "Column",
+                      props: { gap: 8 },
+                      children: ["grand-total"],
+                    },
+                    grandTotal: {
+                      type: "Text",
+                      props: { text: "$128.00", weight: "bold" },
+                      children: [],
+                    },
+                    footer: {
+                      type: "Text",
+                      props: { text: "Thank you" },
+                      children: [],
+                    },
+                  },
+                }),
+              },
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      )) as typeof fetch;
+
+    const spec = await generateSpec(
+      { prompt: "Generate invoice layout" },
+      undefined,
+      { config: openAiConfig, fetch: fetchMock },
+    );
+
+    expect(spec?.elements.root.children).toEqual(["header", "tableSection", "footer"]);
+    expect(spec?.elements.tableSection.children).toEqual(["grandTotal"]);
   });
 
   it("persists stored LLM config to storage", () => {
