@@ -1,6 +1,7 @@
-const encoder = new TextEncoder();
+import type { SoneSpec } from "./types";
 
 const FIXTURE_DELAY_MS = 80;
+const LOCAL_SPEC_DELAY_MS = 24;
 
 const fixturePatches = [
   { op: "add", path: "/root", value: "root" },
@@ -24,9 +25,7 @@ const fixturePatches = [
     value: {
       type: "Text",
       props: {
-        segments: [
-          { text: "Sone live-agent", style: { weight: "bold" } },
-        ],
+        segments: [{ text: "Sone live-agent", style: { weight: "bold" } }],
         size: 34,
         color: "#111827",
         lineHeight: 1.1,
@@ -149,38 +148,76 @@ const fixturePatches = [
       children: [],
     },
   },
-];
+] as const;
 
-function lineForPatch(patch) {
+function lineForPatch(patch: unknown) {
   return `${JSON.stringify(patch)}\n`;
 }
 
-export function createFixtureJsonlStream({ signal } = {}) {
+function createLineStream(
+  lines: string[],
+  {
+    signal,
+    delayMs = 0,
+  }: {
+    signal?: AbortSignal;
+    delayMs?: number;
+  } = {},
+) {
   let index = 0;
 
-  return new ReadableStream({
+  return new ReadableStream<string>({
     async pull(controller) {
-      if (signal?.aborted) {
+      if (signal?.aborted || index >= lines.length) {
         controller.close();
         return;
       }
 
-      if (index >= fixturePatches.length) {
-        controller.close();
-        return;
-      }
-
-      controller.enqueue(encoder.encode(lineForPatch(fixturePatches[index])));
+      controller.enqueue(lines[index]);
       index += 1;
 
-      if (index < fixturePatches.length) {
-        await new Promise((resolve) => setTimeout(resolve, FIXTURE_DELAY_MS));
+      if (delayMs > 0 && index < lines.length) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
     },
     cancel() {
-      index = fixturePatches.length;
+      index = lines.length;
     },
   });
+}
+
+function specToPatches(spec: SoneSpec) {
+  return [
+    { op: "add", path: "/root", value: spec.root },
+    ...Object.entries(spec.elements).map(([key, value]) => ({
+      op: "add" as const,
+      path: `/elements/${key}`,
+      value,
+    })),
+  ];
+}
+
+export function createFixtureJsonlStream({
+  signal,
+  delayMs = FIXTURE_DELAY_MS,
+}: {
+  signal?: AbortSignal;
+  delayMs?: number;
+} = {}) {
+  return createLineStream(fixturePatches.map(lineForPatch), { signal, delayMs });
+}
+
+export function createSpecJsonlStream(
+  spec: SoneSpec,
+  {
+    signal,
+    delayMs = LOCAL_SPEC_DELAY_MS,
+  }: {
+    signal?: AbortSignal;
+    delayMs?: number;
+  } = {},
+) {
+  return createLineStream(specToPatches(spec).map(lineForPatch), { signal, delayMs });
 }
 
 export function fixtureJsonlText() {

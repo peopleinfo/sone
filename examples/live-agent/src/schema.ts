@@ -85,6 +85,8 @@ export const soneSchema = defineSchema(
       "Generate real Sone canvas layouts, not DOM or CSS component names.",
       "Every element must include type, props, and children. Leaf components use children: [].",
       "Use Column, Row, Grid, Text, Photo, Table, List, Path, and ClipGroup only.",
+      "The root id must match a key in elements; add that element before referencing it as root.",
+      "Do not put color on Column, Row, Grid, List item, or table cell props; use background for fills. Text may use segments[].style.color.",
       "For Text, prefer props.segments with explicit text and optional style objects.",
       "For Table, do not emit TableRow or TableCell elements. Use Table.props.rows[].cells[]; the renderer creates wrapper nodes.",
       "For List, do not emit ListItem elements. Use List.props.items[]; the renderer creates wrapper nodes.",

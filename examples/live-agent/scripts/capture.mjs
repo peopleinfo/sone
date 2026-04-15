@@ -1,22 +1,29 @@
-import { chromium } from "playwright";
+import { chromium } from "playwright-core";
 import { fileURLToPath } from "node:url";
-import { resolve, dirname } from "node:path";
+import { dirname, resolve } from "node:path";
+import { existsSync } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, "..");
 
 const FRONTEND = "http://127.0.0.1:5173";
 const OUTPUT = resolve(PROJECT_ROOT, "capture.png");
-
-const MESSAGE =
-  "design khmer card name សុខ សាន្ត, title នាយកប្រតិបត្តិ, company ស្តារឡាប, email sok.sant@starlabs.kh, phone +855 12 345 678, address ភ្នំពេញ";
+const DEFAULT_CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
 async function main() {
   console.log("1. Launching browser ...");
-  const browser = await chromium.launch();
+  const executablePath = process.env.PLAYWRIGHT_CHROME_PATH || DEFAULT_CHROME_PATH;
+
+  if (!existsSync(executablePath)) {
+    throw new Error(
+      `Chrome executable not found at ${executablePath}. Set PLAYWRIGHT_CHROME_PATH to a local Chrome or Chromium binary.`,
+    );
+  }
+
+  const browser = await chromium.launch({ executablePath });
   const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
 
-  const url = `${FRONTEND}/capture.html?message=${encodeURIComponent(MESSAGE)}`;
+  const url = `${FRONTEND}/capture.html?fixture=1`;
   page.on("console", (msg) => console.log(`   [browser] ${msg.type()}: ${msg.text()}`));
   page.on("pageerror", (err) => console.log(`   [browser error] ${err.message}`));
 

@@ -14,12 +14,4 @@ export default defineConfig({
     },
     conditions: ["browser"],
   },
-  server: {
-    proxy: {
-      "/api": {
-        target: `http://${process.env.LIVE_AGENT_API_HOST || "127.0.0.1"}:${process.env.LIVE_AGENT_API_PORT || "5174"}`,
-        changeOrigin: true,
-      },
-    },
-  },
 });

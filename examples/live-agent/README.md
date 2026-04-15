@@ -1,23 +1,34 @@
 # Sone Live Agent
 
-A local example that pairs `json-render` prompt generation with a custom Sone catalog and a live canvas preview.
+A browser-only example that pairs `json-render` prompt generation with a custom Sone catalog and a live canvas preview.
+
+Patch streaming and catalog helpers come from [`@json-render/core`](https://www.npmjs.com/package/@json-render/core), published from the upstream project [vercel-labs/json-render](https://github.com/vercel-labs/json-render).
 
 ## What it does
 
-- Streams JSONL patches from a local API
+- Streams JSONL patches directly in the SPA
 - Compiles them into a prompt-friendly Sone spec
 - Translates that spec into real `SoneNode` trees
 - Renders and exports the result in the browser
 - Supports a deterministic fixture path for offline development and tests
 
-## Environment
+## Setup
 
-Copy `.env.example` to `.env` and provide values when you want live model generation.
+No environment variables are required for the SPA.
+
+By default, the setup dialog starts with g4f fetch mode:
+- URL: `https://g4f.space/api/pollinations/chat/completions`
+- model: `openai`
+
+The same dialog also supports OpenAI-compatible endpoints. You can switch the connection type, paste a custom URL, optionally provide a model, and optionally provide an API key. This works for providers like Ollama, LM Studio, or Vercel AI Gateway. For Vercel AI Gateway, model names should use `provider/model-name` format (for example `openai/gpt-4o-mini`).
+
+The app only saves settings to browser local storage after the connection test passes.
 
 ## Scripts
 
-- `npm run dev` - start the local API and Vite frontend together
+- `npm run dev` - start the SPA with Vite
 - `npm run build` - build the frontend bundle
+- `npm run capture` - render the capture page and save `capture.png`
 - `npm run check` - run TypeScript checks
 - `npm run test` - run the example test suite
 - `npm run mcp` - start the MCP server (stdio transport)
@@ -56,52 +67,14 @@ The tool description includes the full Sone component catalog (Column, Row, Grid
 
 **Output:** The validated spec as JSON (with warnings if validation found issues).
 
-## API
+## Runtime Modes
 
-### POST `/api/agent/chat`
-
-OpenAPI-compatible chat endpoint. Accepts a message, runs the generation pipeline, and returns the completed Sone spec as JSON.
-
-**Request:**
-
-```json
-{
-  "message": "create a pricing table",
-  "conversation_id": "optional-uuid"
-}
-```
-
-**Response (`ChatResponse`):**
-
-```json
-{
-  "conversation_id": "uuid",
-  "response": "Generated a Sone layout with 5 element(s) from your prompt.",
-  "spec": { "root": "root", "elements": { ... } }
-}
-```
-
-**Test with curl:**
-
-```sh
-curl -X 'POST' \
-  'http://localhost:5174/api/agent/chat' \
-  -H 'accept: application/json' \
-  -H 'Content-Type: application/json' \
-  -d '{"message": ""}'
-```
-
-An empty `message` returns the deterministic fixture spec (no credentials needed). A non-empty message requires `AI_GATEWAY_API_KEY`.
-
-### POST `/api/generate`
-
-Streaming JSONL endpoint for incremental patch generation. See `server/generate.mjs`.
-
-### GET `/api/health`
-
-Returns `{ "ok": true }`.
+- Fixture mode: `Run fixture` for an offline demo and tests.
+- Local backend mode: the SPA posts to `http://localhost:8080/api/agent/chat`.
+- OpenAI-compatible mode: the SPA posts to the configured chat completions URL and asks the model to return valid Sone patches.
+- MCP mode: `npm run mcp` does not require this chat backend because the connected IDE or agent provides the LLM.
 
 ## Notes
 
-- This example currently follows `examples/live-editor` and depends on `sone` from npm.
+- The MCP server remains available under `server/mcp.ts`; only the preview app was simplified to run as a SPA.
 - The fixture path is the first debugging surface when renderer, schema, or translator changes break the preview.

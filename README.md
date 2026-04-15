@@ -159,6 +159,9 @@ await fs.writeFile("image.jpg", buffer);
 
 More examples can be found in the [test/visual](test/visual) directory.
 
+> [!WARNING]
+> Free/public LLM endpoints (including g4f providers) can be unstable, rate-limited, or change behavior without notice. For demos/prototyping, verify current provider/model availability in the [g4f Providers and Models docs](https://g4f.dev/docs/providers-and-models).
+
 ---
 
 **Syntax Highlighting**

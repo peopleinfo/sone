@@ -1,6 +1,6 @@
 import { createSpecStreamCompiler } from "@json-render/core";
 import { describe, expect, it } from "vitest";
-import { fixtureJsonlText } from "../server/fixture-stream.mjs";
+import { fixtureJsonlText } from "@/fixture-stream";
 import type { SoneSpec } from "@/types";
 
 describe("fixture stream compilation", () => {
