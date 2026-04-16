@@ -1189,8 +1189,28 @@ function coerceLooseSpecObject(value: unknown): SoneSpec | null {
     return null;
   }
 
-  const rootValue = (value as { root?: unknown }).root;
-  if (!isLooseElementNode(rootValue)) {
+  if (isLooseElementNode(value)) {
+    return coerceElementTreeToSpec(value);
+  }
+
+  const obj = value as Record<string, unknown>;
+
+  const rootValue = obj.root;
+  if (isLooseElementNode(rootValue)) {
+    return coerceElementTreeToSpec(rootValue);
+  }
+
+  for (const v of Object.values(obj)) {
+    if (isLooseElementNode(v)) {
+      return coerceElementTreeToSpec(v);
+    }
+  }
+
+  return null;
+}
+
+function coerceElementTreeToSpec(rootNode: unknown): SoneSpec | null {
+  if (!isLooseElementNode(rootNode)) {
     return null;
   }
 
@@ -1230,7 +1250,7 @@ function coerceLooseSpecObject(value: unknown): SoneSpec | null {
     return id;
   };
 
-  const rootId = visit(rootValue, "root");
+  const rootId = visit(rootNode, "root");
   if (!rootId) {
     return null;
   }
@@ -1305,6 +1325,25 @@ function tryAllParseStrategies(text: string): SoneSpec | null {
       prepareSpec(extractedCompilerResult) ??
       prepareSpec(coerceLooseSpecObject(extractedCompilerResult));
     if (extractedCompiled) return extractedCompiled;
+  }
+
+  let braceDepth = 0;
+  let start = -1;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === "{") {
+      if (braceDepth === 0) start = i;
+      braceDepth++;
+    } else if (text[i] === "}") {
+      braceDepth--;
+      if (braceDepth === 0 && start >= 0) {
+        try {
+          const obj = JSON.parse(text.slice(start, i + 1));
+          const fromObj = prepareSpec(obj) ?? prepareSpec(coerceLooseSpecObject(obj));
+          if (fromObj) return fromObj;
+        } catch { /* skip */ }
+        start = -1;
+      }
+    }
   }
 
   return null;
@@ -1727,18 +1766,21 @@ export async function streamSpec(
       }
     }
 
-    const fallbackSpec = prepareSpec(finalResult) ?? finalResult ?? null;
-    const issues = validateSoneSpec(fallbackSpec);
-    if (issues.length === 0 && fallbackSpec) {
-      callbacks.onSpec(fallbackSpec as SoneSpec);
-      callbacks.onPartialSpec?.(null);
-      return;
+    const fallbackSpec = prepareSpec(finalResult);
+    if (fallbackSpec) {
+      const issues = validateSoneSpec(fallbackSpec);
+      if (issues.length === 0) {
+        callbacks.onSpec(fallbackSpec);
+        callbacks.onPartialSpec?.(null);
+        return;
+      }
+      throw new Error(
+        issues.map((issue) => `${issue.path}: ${issue.message}`).join("\n"),
+      );
     }
 
     throw new Error(
-      issues.length > 0
-        ? issues.map((issue) => `${issue.path}: ${issue.message}`).join("\n")
-        : "LLM stream did not produce a valid Sone spec.",
+      "LLM stream did not produce a valid Sone spec. The response may not contain a root/elements structure.",
     );
   } catch (error) {
     callbacks.onError?.(error instanceof Error ? error.message : String(error));

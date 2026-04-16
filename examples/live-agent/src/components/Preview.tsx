@@ -1,17 +1,40 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { browserRenderer } from "@/renderer";
+import { SoneRenderer } from "@/components/SoneRenderer";
+import type { SoneSpec } from "@/types";
 
 interface PreviewProps {
-  canvas: HTMLCanvasElement | null;
+  spec: SoneSpec | null;
+  previewSpec?: SoneSpec | null;
   isRunning: boolean;
+  onCanvas?: (canvas: HTMLCanvasElement | null) => void;
+  onError?: (error: string | null) => void;
 }
 
-export function Preview({ canvas, isRunning }: PreviewProps) {
+export function Preview({ spec, previewSpec, isRunning, onCanvas, onError }: PreviewProps) {
   const [zoom, setZoom] = useState(1);
+  const [dimensions, setDimensions] = useState<{ w: number; h: number } | null>(null);
+
+  const handleCanvas = useCallback(
+    (canvas: HTMLCanvasElement | null) => {
+      if (canvas) {
+        const dpr = browserRenderer.dpr();
+        setDimensions({ w: Math.round(canvas.width / dpr), h: Math.round(canvas.height / dpr) });
+        setZoom(1);
+      } else {
+        setDimensions(null);
+      }
+      onCanvas?.(canvas);
+    },
+    [onCanvas],
+  );
 
   useEffect(() => {
-    if (canvas) setZoom(1);
-  }, [canvas]);
+    if (!spec && !previewSpec) {
+      setDimensions(null);
+      setZoom(1);
+    }
+  }, [spec, previewSpec]);
 
   return (
     <section className="panel preview-panel">
@@ -20,9 +43,9 @@ export function Preview({ canvas, isRunning }: PreviewProps) {
           <strong>Preview</strong>
           {isRunning ? (
             <span className="meta streaming-badge">Streaming...</span>
-          ) : canvas ? (
+          ) : dimensions ? (
             <span className="meta">
-              {Math.round(canvas.width / browserRenderer.dpr())} x {Math.round(canvas.height / browserRenderer.dpr())} px
+              {dimensions.w} x {dimensions.h} px
             </span>
           ) : null}
         </div>
@@ -40,41 +63,24 @@ export function Preview({ canvas, isRunning }: PreviewProps) {
       </header>
 
       <div className="preview-canvas-shell">
-        {canvas ? (
+        {spec || previewSpec ? (
           <div className="preview-center">
-            <CanvasDisplay canvas={canvas} zoom={zoom} />
+            <div
+              className="canvas-mount"
+              style={{ transform: `scale(${zoom})`, transformOrigin: "top center" }}
+            >
+              <SoneRenderer
+                spec={spec}
+                previewSpec={previewSpec}
+                onCanvas={handleCanvas}
+                onError={onError}
+              />
+            </div>
           </div>
         ) : (
           <div className="preview-empty">Generate a design or run the fixture stream.</div>
         )}
       </div>
     </section>
-  );
-}
-
-function CanvasDisplay({ canvas, zoom }: { canvas: HTMLCanvasElement; zoom: number }) {
-  const mountRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const mount = mountRef.current;
-    if (!mount) return;
-    while (mount.firstChild) mount.removeChild(mount.firstChild);
-    canvas.style.width = "100%";
-    canvas.style.height = "auto";
-    canvas.style.maxWidth = "100%";
-    canvas.style.display = "block";
-    mount.appendChild(canvas);
-  }, [canvas]);
-
-  return (
-    <div
-      className="canvas-mount"
-      style={{
-        transform: `scale(${zoom})`,
-        transformOrigin: "top center",
-      }}
-    >
-      <div ref={mountRef} />
-    </div>
   );
 }

@@ -172,6 +172,18 @@ function stripInvalidProps(
   return cleaned;
 }
 
+const MAX_SAFE_DIMENSION = 2048;
+const DIMENSION_CLAMP_KEYS = ["width", "height", "minWidth", "minHeight", "maxWidth", "maxHeight"] as const;
+
+function clampDimensions(obj: Record<string, unknown>) {
+  for (const key of DIMENSION_CLAMP_KEYS) {
+    const v = obj[key];
+    if (typeof v === "number" && v > MAX_SAFE_DIMENSION) {
+      obj[key] = MAX_SAFE_DIMENSION;
+    }
+  }
+}
+
 function normalizeElementProps(
   type: SoneSpec["elements"][string]["type"],
   props: SoneSpec["elements"][string]["props"],
@@ -179,9 +191,20 @@ function normalizeElementProps(
   let normalized: Record<string, unknown> = { ...(props as Record<string, unknown>) };
 
   coerceNumericProps(normalized);
+  clampDimensions(normalized);
 
   if (type === "Text" || type === "TextDefault") {
     normalized = normalizeTextStyleAliases(normalized) as Record<string, unknown>;
+  }
+
+  const borderColorAliases = ["borderTopColor", "borderRightColor", "borderBottomColor", "borderLeftColor"] as const;
+  for (const alias of borderColorAliases) {
+    if (normalized[alias] !== undefined) {
+      if (normalized.borderColor === undefined && typeof normalized[alias] === "string") {
+        normalized.borderColor = normalized[alias];
+      }
+      delete normalized[alias];
+    }
   }
 
   if (normalized.boxShadow !== undefined) {
@@ -412,13 +435,36 @@ export function normalizeSpecStructure(spec: SoneSpec | null): SoneSpec | null {
  * Recover root, flatten inline children, default missing `children`, reconcile id styles.
  * Returns null if the value cannot be treated as a spec (no `elements` object).
  */
+function findNestedSpec(obj: Record<string, unknown>, depth = 0): Partial<SoneSpec> | null {
+  if (depth > 3) return null;
+  for (const value of Object.values(obj)) {
+    if (!isRecord(value)) continue;
+    if (value.elements && typeof value.elements === "object") {
+      return value as Partial<SoneSpec>;
+    }
+    const deeper = findNestedSpec(value as Record<string, unknown>, depth + 1);
+    if (deeper) return deeper;
+  }
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      if (!isRecord(item)) continue;
+      if ((item as Record<string, unknown>).elements && typeof (item as Record<string, unknown>).elements === "object") {
+        return item as Partial<SoneSpec>;
+      }
+    }
+  }
+  return null;
+}
+
 export function prepareSpec(spec: unknown): SoneSpec | null {
   if (!spec || typeof spec !== "object") {
     return null;
   }
-  const candidate = spec as Partial<SoneSpec>;
+  let candidate = spec as Partial<SoneSpec>;
   if (!candidate.elements || typeof candidate.elements !== "object") {
-    return null;
+    const nested = findNestedSpec(spec as Record<string, unknown>);
+    if (!nested) return null;
+    candidate = nested;
   }
   const recovered = recoverMissingRoot(candidate as SoneSpec);
   if (!recovered) {

@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { render, type SoneNode } from "sone";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
   clearStoredLlmConfig,
   DEFAULT_CHAT_ENDPOINT,
@@ -17,9 +16,7 @@ import {
 } from "@/client";
 import { Preview } from "@/components/Preview";
 import { exportAsJPEG, exportAsPNG } from "@/export";
-import { browserRenderer } from "@/renderer";
 import { soneCatalog } from "@/catalog";
-import { specToSoneNode, specToSoneNodeLenient } from "@/spec-to-sone";
 import type { SoneSpec } from "@/types";
 
 const DEFAULT_PROMPT =
@@ -68,7 +65,6 @@ export default function App() {
   });
   const [renderError, setRenderError] = useState<string | null>(null);
   const [streamError, setStreamError] = useState<string | null>(null);
-  const [lastNode, setLastNode] = useState<SoneNode>(null);
   const controllerRef = useRef<AbortController | null>(null);
 
   const prettySpec = useMemo(() => (spec ? JSON.stringify(spec, null, 2) : ""), [spec]);
@@ -107,7 +103,7 @@ export default function App() {
       return;
     }
     if (previewThrottleRef.current !== null) return;
-    previewThrottleRef.current = setTimeout(flushPreview, 300);
+    previewThrottleRef.current = setTimeout(flushPreview, 500);
   }, [flushPreview]);
 
   const runStream = useCallback(async () => {
@@ -165,7 +161,6 @@ export default function App() {
     setSpec(null);
     setPreviewSpec(null);
     setCanvas(null);
-    setLastNode(null);
     setRenderError(null);
     setStreamError(null);
     setIsStreaming(false);
@@ -246,61 +241,6 @@ export default function App() {
     },
     [canvas],
   );
-
-  const activeSpec = previewSpec ?? spec;
-  const renderingRef = useRef(false);
-  const pendingRenderRef = useRef(false);
-
-  useEffect(() => {
-    if (!activeSpec) {
-      setCanvas(null);
-      setLastNode(null);
-      setRenderError(null);
-      return;
-    }
-
-    let cancelled = false;
-
-    async function doRender() {
-      if (renderingRef.current) {
-        pendingRenderRef.current = true;
-        return;
-      }
-      renderingRef.current = true;
-      pendingRenderRef.current = false;
-
-      try {
-        const node = previewSpec
-          ? specToSoneNodeLenient(activeSpec)
-          : specToSoneNode(activeSpec);
-        if (!node || cancelled) return;
-        const nextCanvas = await render<HTMLCanvasElement>(node, browserRenderer);
-        if (!cancelled) {
-          setLastNode(node);
-          setCanvas(nextCanvas);
-          setRenderError(null);
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setRenderError(error instanceof Error ? error.message : String(error));
-        }
-      } finally {
-        renderingRef.current = false;
-        if (pendingRenderRef.current && !cancelled) {
-          pendingRenderRef.current = false;
-        }
-      }
-    }
-
-    const rafId = requestAnimationFrame(() => {
-      if (!cancelled) void doRender();
-    });
-
-    return () => {
-      cancelled = true;
-      cancelAnimationFrame(rafId);
-    };
-  }, [activeSpec, previewSpec]);
 
   return (
     <div className="app-shell">
@@ -428,14 +368,20 @@ export default function App() {
           </div>
         </section>
 
-        <Preview canvas={canvas} isRunning={isStreaming} />
+        <Preview
+          spec={spec}
+          previewSpec={previewSpec}
+          isRunning={isStreaming}
+          onCanvas={setCanvas}
+          onError={setRenderError}
+        />
 
         {isSpecVisible ? (
           <section className="panel spec-panel">
             <header className="panel-header">
               <strong>Generated Spec</strong>
               <div className="panel-actions">
-                {lastNode ? <span className="meta">Root ready</span> : null}
+                {spec ? <span className="meta">Root ready</span> : null}
                 <button type="button" onClick={() => setIsSpecVisible(false)}>
                   Collapse
                 </button>

@@ -1,42 +1,16 @@
-import {
-  ClipGroup,
-  Column,
-  Grid,
-  List,
-  ListItem,
-  PageBreak,
-  Path,
-  Photo,
-  Row,
-  Span,
-  Table,
-  TableCell,
-  TableRow,
-  Text,
-  TextDefault,
-  type SoneNode,
-} from "sone";
+import { Column, type SoneNode } from "sone";
 import { soneCatalog } from "./catalog";
+import { soneComponents, assignProps } from "./components";
 import { prepareSpec } from "./spec-normalize";
 import type {
   BaseStyleProps,
-  ClipGroupProps,
-  GridProps,
-  ListItemSpec,
-  ListProps,
-  PageBreakProps,
-  PathProps,
-  PhotoProps,
   SoneBuildOptions,
   SoneBuildResult,
   SoneElement,
   SoneSpec,
   SoneSpecValidationIssue,
-  TableCellSpec,
   TableProps,
-  TextProps,
-  TextDefaultProps,
-  TextSegment,
+  ListProps,
 } from "./types";
 
 const DEFAULT_MAX_DEPTH = 32;
@@ -54,6 +28,10 @@ const DIMENSION_KEYS = [
   "maxHeight",
 ] as const;
 
+// =============================================================================
+// Errors
+// =============================================================================
+
 export class SoneSpecError extends Error {
   readonly issues: SoneSpecValidationIssue[];
 
@@ -64,13 +42,26 @@ export class SoneSpecError extends Error {
   }
 }
 
+// =============================================================================
+// Validation
+// =============================================================================
+
 export function validateSoneSpec(
   spec: unknown,
   options: SoneBuildOptions = {},
 ): SoneSpecValidationIssue[] {
   const issues: SoneSpecValidationIssue[] = [];
   const prepared = prepareSpec(spec);
-  const catalogResult = soneCatalog.validate(prepared ?? spec);
+
+  if (!prepared) {
+    issues.push({
+      path: "/",
+      message: "Could not extract a valid Sone spec (missing root and elements). The LLM response may be wrapped or malformed.",
+    });
+    return issues;
+  }
+
+  const catalogResult = soneCatalog.validate(prepared);
   if (!catalogResult.success) {
     for (const issue of catalogResult.error?.issues ?? []) {
       issues.push({
@@ -140,6 +131,10 @@ export function assertValidSoneSpec(
   }
 }
 
+// =============================================================================
+// Build (strict)
+// =============================================================================
+
 export function buildSoneNode(
   spec: unknown,
   options: SoneBuildOptions = {},
@@ -159,11 +154,19 @@ export function specToSoneNode(
   return buildSoneNode(spec, options).node;
 }
 
+// =============================================================================
+// Build (lenient — for streaming preview)
+// =============================================================================
+
 export function specToSoneNodeLenient(spec: unknown): SoneNode {
   const data = prepareSpec(spec);
   if (!data?.root || !data.elements[data.root]) return null;
   return buildElementLenient(data.root, data, 0);
 }
+
+// =============================================================================
+// Element shape validation
+// =============================================================================
 
 function validateElementShape(
   id: string,
@@ -279,6 +282,10 @@ function detectCyclesAndDepth(
   visit(spec.root, 1);
 }
 
+// =============================================================================
+// Tree walking — delegates to soneComponents registry
+// =============================================================================
+
 function buildElement(
   id: string,
   spec: SoneSpec,
@@ -297,36 +304,14 @@ function buildElement(
     buildElement(childId, spec, depth + 1, options),
   );
 
-  switch (element.type) {
-    case "Column":
-      return applyBaseProps(Column(...children), element.props as BaseStyleProps);
-    case "Row":
-      return applyBaseProps(Row(...children), element.props as BaseStyleProps);
-    case "Grid":
-      return applyGridProps(Grid(...children), element.props as GridProps);
-    case "Text":
-      return applyTextProps(buildText(element.props as TextProps), element.props as TextProps);
-    case "TextDefault":
-      return applyTextDefaultProps(
-        TextDefault(...children),
-        element.props as TextDefaultProps,
-      );
-    case "PageBreak":
-      return applyPageBreakProps(element.props as PageBreakProps);
-    case "Photo":
-      return applyPhotoProps(element.props as PhotoProps);
-    case "Path":
-      return applyPathProps(element.props as PathProps);
-    case "Table":
-      return applyTableProps(element.props as TableProps);
-    case "List":
-      return applyListProps(element.props as ListProps);
-    case "ClipGroup":
-      return applyBaseProps(
-        ClipGroup((element.props as ClipGroupProps).clipPath, ...children),
-        omitKeys(element.props as ClipGroupProps, ["clipPath"]),
-      );
+  const builder = soneComponents[element.type];
+  if (!builder) {
+    throw new SoneSpecError([{
+      path: `/elements/${id}`,
+      message: `Unknown component type "${element.type}".`,
+    }]);
   }
+  return builder(element.props as Record<string, unknown>, children);
 }
 
 function buildElementLenient(
@@ -344,274 +329,10 @@ function buildElementLenient(
     .filter((node): node is NonNullable<SoneNode> => node != null);
 
   try {
-    switch (element.type) {
-      case "Column":
-        return applyBaseProps(Column(...children), element.props as BaseStyleProps);
-      case "Row":
-        return applyBaseProps(Row(...children), element.props as BaseStyleProps);
-      case "Grid":
-        return applyGridProps(Grid(...children), element.props as GridProps);
-      case "Text":
-        return applyTextProps(buildText(element.props as TextProps), element.props as TextProps);
-      case "TextDefault":
-        return applyTextDefaultProps(TextDefault(...children), element.props as TextDefaultProps);
-      case "PageBreak":
-        return applyPageBreakProps(element.props as PageBreakProps);
-      case "Photo":
-        return applyPhotoProps(element.props as PhotoProps);
-      case "Path":
-        return applyPathProps(element.props as PathProps);
-      case "Table":
-        return applyTableProps(element.props as TableProps);
-      case "List":
-        return applyListProps(element.props as ListProps);
-      case "ClipGroup":
-        return applyBaseProps(
-          ClipGroup((element.props as ClipGroupProps).clipPath, ...children),
-          omitKeys(element.props as ClipGroupProps, ["clipPath"]),
-        );
-      default:
-        return null;
-    }
+    const builder = soneComponents[element.type];
+    if (!builder) return null;
+    return builder(element.props as Record<string, unknown>, children);
   } catch {
-    return children.length > 0 ? applyBaseProps(Column(...children), {}) : null;
+    return children.length > 0 ? (() => { const n = Column(...children); assignProps(n, {}); return n; })() : null;
   }
-}
-
-function buildText(props: TextProps | TableCellSpec | ListItemSpec) {
-  const segments = getTextSegments(props);
-  const node = Text(...segments.map(segmentToTextChild));
-  applyInlineTextStyle(node, props);
-  return node;
-}
-
-function getTextSegments(props: TextProps | TableCellSpec | ListItemSpec): TextSegment[] {
-  if (props.segments?.length) return props.segments;
-  if (props.text != null) return [{ text: props.text }];
-  return [{ text: "" }];
-}
-
-function segmentToTextChild(segment: TextSegment) {
-  if (!segment.style || Object.keys(segment.style).length === 0) {
-    return segment.text;
-  }
-  const span = Span(segment.text);
-  assignProps(span, segment.style);
-  return span;
-}
-
-function applyTextProps(node: ReturnType<typeof Text>, props: TextProps) {
-  const passthrough = omitKeys(props, ["segments", "text"]);
-  assignProps(node, passthrough);
-  return node;
-}
-
-function applyTextDefaultProps(
-  node: ReturnType<typeof TextDefault>,
-  props: TextDefaultProps,
-) {
-  assignProps(node, props);
-  return node;
-}
-
-function applyPageBreakProps(props: PageBreakProps) {
-  const mode = props.mode ?? "before";
-  return PageBreak().pageBreak(mode);
-}
-
-function applyInlineTextStyle(
-  node: ReturnType<typeof Text>,
-  props: TextProps | TableCellSpec | ListItemSpec,
-) {
-  const styleValue = (props as { style?: unknown }).style;
-  if (styleValue && typeof styleValue === "object" && !Array.isArray(styleValue)) {
-    assignProps(node, styleValue as object);
-  }
-}
-
-function applyPhotoProps(props: PhotoProps) {
-  const node = Photo(props.src);
-  assignProps(node, omitKeys(props, ["src"]));
-  return node;
-}
-
-function applyPathProps(props: PathProps) {
-  const node = Path(props.d);
-  assignProps(node, omitKeys(props, ["d"]));
-  return node;
-}
-
-function cellHasPadding(cell: TableCellSpec): boolean {
-  const c = cell as Record<string, unknown>;
-  return (
-    c.padding !== undefined ||
-    c.paddingTop !== undefined ||
-    c.paddingBottom !== undefined ||
-    c.paddingLeft !== undefined ||
-    c.paddingRight !== undefined
-  );
-}
-
-function applyTableProps(props: TableProps) {
-  const rows = props.rows.map((row) =>
-    TableRow(
-      ...row.cells.map((cell) => {
-        const text = buildText(cell);
-        if (cell.header) {
-          assignProps(text, { weight: "bold" });
-        }
-        const tableCell = TableCell(text);
-        const cellProps = omitKeys(cell, ["segments", "text", "style", "header"]);
-        if (!cellHasPadding(cell)) {
-          assignProps(tableCell, { paddingTop: 6, paddingBottom: 6, paddingLeft: 10, paddingRight: 10 });
-        }
-        assignProps(tableCell, cellProps);
-        return tableCell;
-      }),
-    ),
-  );
-  const node = Table(...rows);
-  const tableProps = omitKeys(props, ["rows"]);
-  if (!tableProps.spacing && !tableProps.gap) {
-    assignProps(node, { spacing: [8, 0] });
-  }
-  assignProps(node, tableProps);
-  return node;
-}
-
-function applyListProps(props: ListProps) {
-  const node = List(
-    ...props.items.map((item: ListItemSpec) => {
-      const listItem = ListItem(buildText(item));
-      assignProps(listItem, omitKeys(item, ["segments", "text", "style"]));
-      return listItem;
-    }),
-  );
-  assignProps(node, omitKeys(props, ["items"]));
-  return node;
-}
-
-function applyGridProps(node: ReturnType<typeof Grid>, props: GridProps) {
-  if (props.columns) node.columns(...props.columns);
-  if (props.rows) node.rows(...props.rows);
-  if (props.autoRows) node.autoRows(...props.autoRows);
-  if (props.autoColumns) node.autoColumns(...props.autoColumns);
-  assignProps(node, omitKeys(props, ["columns", "rows", "autoRows", "autoColumns"]));
-  return node;
-}
-
-function applyBaseProps<T extends SoneNode>(node: T, props: BaseStyleProps): T {
-  assignProps(node, props);
-  return node;
-}
-
-function assignProps(target: unknown, props: object) {
-  const holder = target as { props?: Record<string, unknown> };
-  if (!holder.props) return;
-  const normalized = normalizeSoneProps(props);
-  Object.assign(holder.props, normalized);
-}
-
-function normalizeSoneProps(props: object) {
-  const normalized: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(props)) {
-    if (value === undefined) continue;
-    if (key === "paddingVertical") {
-      if (normalized.paddingTop === undefined) {
-        normalized.paddingTop = value;
-      }
-      if (normalized.paddingBottom === undefined) {
-        normalized.paddingBottom = value;
-      }
-      continue;
-    }
-    if (key === "paddingHorizontal") {
-      if (normalized.paddingLeft === undefined) {
-        normalized.paddingLeft = value;
-      }
-      if (normalized.paddingRight === undefined) {
-        normalized.paddingRight = value;
-      }
-      continue;
-    }
-    if (key === "boxShadow") {
-      normalized.shadows = Array.isArray(value) ? value : [value];
-      continue;
-    }
-    if (key === "borderTop") {
-      if (typeof value === "number") {
-        normalized.borderTopWidth = value;
-      } else if (typeof value === "string") {
-        const parsedWidth = parseBorderWidth(value);
-        if (parsedWidth !== null) {
-          normalized.borderTopWidth = parsedWidth;
-        }
-        const parsedColor = parseBorderColor(value);
-        if (parsedColor && normalized.borderColor === undefined) {
-          normalized.borderColor = parsedColor;
-        }
-      }
-      continue;
-    }
-    if (key === "borderBottom") {
-      if (typeof value === "number") {
-        normalized.borderBottomWidth = value;
-      } else if (typeof value === "string") {
-        const parsedWidth = parseBorderWidth(value);
-        if (parsedWidth !== null) {
-          normalized.borderBottomWidth = parsedWidth;
-        }
-        const parsedColor = parseBorderColor(value);
-        if (parsedColor && normalized.borderColor === undefined) {
-          normalized.borderColor = parsedColor;
-        }
-      }
-      continue;
-    }
-    if (key === "background") {
-      normalized.background = Array.isArray(value) ? value : [value];
-      continue;
-    }
-    if (key === "cornerRadius" && typeof value === "number") {
-      normalized.cornerRadius = [value];
-      continue;
-    }
-    if (key === "scale" && typeof value === "number") {
-      normalized.scale = [value, value];
-      continue;
-    }
-    if (key === "font" && typeof value === "string") {
-      normalized.font = [value];
-      continue;
-    }
-    normalized[key] = value;
-  }
-  return normalized;
-}
-
-function parseBorderWidth(borderValue: string): number | null {
-  const widthMatch = borderValue.match(/-?\d*\.?\d+/);
-  if (!widthMatch) {
-    return null;
-  }
-  const width = Number(widthMatch[0]);
-  return Number.isFinite(width) ? width : null;
-}
-
-function parseBorderColor(borderValue: string): string | null {
-  const colorMatch = borderValue.match(
-    /(#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})|rgba?\([^)]+\)|hsla?\([^)]+\))/,
-  );
-  return colorMatch?.[1] ?? null;
-}
-
-function omitKeys<T extends object, K extends keyof T>(
-  value: T,
-  keys: K[],
-): Omit<T, K> {
-  const omitted = { ...(value as Record<string, unknown>) };
-  for (const key of keys) {
-    delete omitted[key as string];
-  }
-  return omitted as Omit<T, K>;
 }
