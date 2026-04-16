@@ -17,8 +17,8 @@ Patch streaming and catalog helpers come from [`@json-render/core`](https://www.
 No environment variables are required for the SPA.
 
 By default, the setup dialog starts with g4f fetch mode:
-- URL: `https://g4f.space/api/pollinations/chat/completions`
-- model: `openai`
+- URL: `https://g4f.space/backend-api/v2/conversation`
+- model: `default`
 
 The same dialog also supports OpenAI-compatible endpoints. You can switch the connection type, paste a custom URL, optionally provide a model, and optionally provide an API key. This works for providers like Ollama, LM Studio, or Vercel AI Gateway. For Vercel AI Gateway, model names should use `provider/model-name` format (for example `openai/gpt-4o-mini`).
 
@@ -71,6 +71,7 @@ The tool description includes the full Sone component catalog (Column, Row, Grid
 
 - Fixture mode: `Run fixture` for an offline demo and tests.
 - Local backend mode: the SPA posts to `http://localhost:8080/api/agent/chat`.
+- g4f mode: the SPA fetches `/backend-api/v2/public-key`, encrypts `x-secret`, streams `/backend-api/v2/conversation`, and checks `/backend-api/v2/models/AnyProvider` during connection testing.
 - OpenAI-compatible mode: the SPA posts to the configured chat completions URL and asks the model to return valid Sone patches.
 - MCP mode: `npm run mcp` does not require this chat backend because the connected IDE or agent provides the LLM.
 

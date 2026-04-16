@@ -198,6 +198,45 @@ describe("createGenerationTextStream", () => {
     expect(spec?.elements.label.type).toBe("Text");
   });
 
+  it("coerces loose JSONL root patches without explicit op fields", async () => {
+    const openAiConfig: StoredLlmConfig = {
+      mode: "openai-compatible",
+      url: "http://localhost:11434/v1/chat/completions",
+      model: "qwen3.5-flash",
+      apiKey: "",
+    };
+
+    const fetchMock: typeof fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content:
+                  `{"path":"/root","value":{"type":"Column","props":{"padding":24},"children":[]}}\n` +
+                  `{"path":"/root/children/0","value":{"type":"Text","props":{"text":"Real G4F"},"children":[]}}`,
+              },
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      )) as typeof fetch;
+
+    const spec = await generateSpec(
+      { prompt: "Generate a minimal Sone spec." },
+      undefined,
+      { config: openAiConfig, fetch: fetchMock },
+    );
+
+    expect(spec?.root).toBe("root");
+    expect(spec?.elements.root.type).toBe("Column");
+    expect(spec?.elements.root.children).toHaveLength(1);
+    expect(spec?.elements[spec?.elements.root.children[0] || ""].type).toBe("Text");
+  });
+
   it("auto-retries once with validation feedback on invalid first response", async () => {
     const openAiConfig: StoredLlmConfig = {
       mode: "openai-compatible",
@@ -399,22 +438,57 @@ describe("createGenerationTextStream", () => {
   });
 
   it("passes g4f connection test via fetch", async () => {
-    const calls: Array<{ url: string; body: string; headers: Record<string, string> }> = [];
+    const calls: Array<{
+      url: string;
+      body: string;
+      method: string;
+      headers: Record<string, string>;
+    }> = [];
     const fetchMock: typeof fetch = (async (input, init) => {
+      const url = String(input);
       calls.push({
-        url: String(input),
+        url,
         body: String(init?.body || ""),
+        method: String(init?.method || "GET"),
         headers: (init?.headers || {}) as Record<string, string>,
       });
 
-      return new Response(JSON.stringify({ choices: [{ message: { content: "OK" } }] }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
+      if (url.endsWith("/public-key")) {
+        return new Response(
+          JSON.stringify({
+            data: "secret-payload",
+            public_key: "-----BEGIN PUBLIC KEY-----mock-----END PUBLIC KEY-----",
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      }
+
+      if (url.endsWith("/models/AnyProvider")) {
+        return new Response(
+          JSON.stringify([{ group: "Default", models: [{ id: "default", default: true }] }]),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      }
+
+      return new Response(
+        `event: content\n` +
+          `data: ${JSON.stringify({ type: "content", content: "OK" })}\n\n`,
+        {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        },
+      );
     }) as typeof fetch;
 
     const result = await testLlmConnection(getDefaultLlmConfig(), {
       fetch: fetchMock,
+      g4fEncryptSecret: () => "encrypted-secret",
     });
 
     expect(result).toEqual({
@@ -422,11 +496,16 @@ describe("createGenerationTextStream", () => {
       endpoint: DEFAULT_G4F_CHAT_ENDPOINT,
       model: DEFAULT_G4F_MODEL,
     });
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.url).toBe(DEFAULT_G4F_CHAT_ENDPOINT);
-    expect(calls[0]?.body).toContain(DEFAULT_OPENAI_TEST_MESSAGE);
-    expect(calls[0]?.body).toContain(`"model":"${DEFAULT_G4F_MODEL}"`);
-    expect(calls[0]?.headers.Authorization).toBeUndefined();
+    expect(calls).toHaveLength(3);
+    expect(calls[0]?.url).toBe("https://g4f.space/backend-api/v2/public-key");
+    expect(calls[0]?.method).toBe("POST");
+    expect(calls[1]?.url).toBe(DEFAULT_G4F_CHAT_ENDPOINT);
+    expect(calls[1]?.body).toContain(DEFAULT_OPENAI_TEST_MESSAGE);
+    expect(calls[1]?.body).toContain(`"model":"${DEFAULT_G4F_MODEL}"`);
+    expect(calls[1]?.headers["x-secret"]).toBe("encrypted-secret");
+    expect(calls[2]?.url).toBe("https://g4f.space/backend-api/v2/models/AnyProvider");
+    expect(calls[2]?.headers["x-api-key"]).toBe("[object Object]");
+    expect(calls[2]?.headers.Authorization).toBeUndefined();
   });
 
   it("passes the OpenAI-compatible connection test without an API key", async () => {

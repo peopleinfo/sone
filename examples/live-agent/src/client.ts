@@ -3,17 +3,19 @@ import {
   createSpecStreamCompiler,
   type Spec,
 } from "@json-render/core";
+import { JSEncrypt } from "jsencrypt";
 import { soneCatalog } from "@/catalog";
 import { createFixtureJsonlStream, createSpecJsonlStream } from "@/fixture-stream";
 import { prepareSpec } from "@/spec-normalize";
 import { validateSoneSpec } from "@/spec-to-sone";
-import type { SoneSpec } from "@/types";
+import type { SoneElement, SoneSpec } from "@/types";
 
 export const DEFAULT_CHAT_ENDPOINT = "http://localhost:8080/api/agent/chat";
-/** g4f OpenAI-compatible endpoint (fetch-based). */
+export const DEFAULT_G4F_API_BASE = "https://g4f.space/backend-api/v2";
+/** g4f conversation endpoint (fetch-based SSE). */
 export const DEFAULT_G4F_CHAT_ENDPOINT =
-  "https://g4f.space/api/pollinations/chat/completions";
-export const DEFAULT_G4F_MODEL = "openai";
+  `${DEFAULT_G4F_API_BASE}/conversation`;
+export const DEFAULT_G4F_MODEL = "default";
 export const TEST_CONNECTION_MESSAGE = "What tools do you have?";
 export const DEFAULT_OPENAI_TEST_MESSAGE = "Reply with OK.";
 
@@ -60,6 +62,7 @@ export interface ClientGenerationOptions {
   signal?: AbortSignal;
   config?: StoredLlmConfig | null;
   fetch?: typeof fetch;
+  g4fEncryptSecret?: G4fEncryptSecret;
 }
 
 interface StorageLike {
@@ -72,6 +75,7 @@ interface RuntimeOptions {
   signal?: AbortSignal;
   config: StoredLlmConfig | null;
   fetch?: typeof fetch;
+  g4fEncryptSecret: G4fEncryptSecret;
 }
 
 type OpenAiCompatResponse = {
@@ -86,6 +90,81 @@ type OpenAiCompatResponse = {
     };
   }>;
 };
+
+type G4fPublicKeyResponse = {
+  data?: string;
+  public_key?: string;
+  user?: string;
+};
+
+type G4fConversationEvent =
+  | {
+      type?: string;
+      content?: string;
+      message?: string;
+      error?: string | { message?: string };
+      response?: {
+        error?: { message?: string };
+        choices?: Array<{
+          delta?: {
+            content?: string;
+          };
+          message?: {
+            content?:
+              | string
+              | Array<{
+                  text?: string;
+                }>;
+          };
+        }>;
+      };
+    }
+  | null;
+
+type G4fEncryptSecret = (publicKey: string, data: string) => string;
+
+const DEFAULT_G4F_PROVIDER = "AnyProvider";
+const DEFAULT_G4F_IGNORED = [
+  "AIBadgr",
+  "Anthropic",
+  "Azure",
+  "BlackboxPro",
+  "CachedSearch",
+  "Cerebras",
+  "Chatai",
+  "Claude",
+  "Cohere",
+  "Custom",
+  "DeepSeek",
+  "FenayAI",
+  "GigaChat",
+  "GithubCopilotAPI",
+  "GlhfChat",
+  "GoogleSearch",
+  "GradientNetwork",
+  "Grok",
+  "HailuoAI",
+  "ItalyGPT",
+  "MarkItDown",
+  "MetaAI",
+  "MicrosoftDesigner",
+  "BingCreateImages",
+  "MiniMax",
+  "OpenaiAPI",
+  "OpenAIFM",
+  "OpenRouter",
+  "PerplexityApi",
+  "Pi",
+  "Replicate",
+  "TeachAnything",
+  "ThebApi",
+  "Together",
+  "WeWordle",
+  "WhiteRabbitNeo",
+  "xAI",
+  "YouTube",
+  "Yqcloud",
+] as const;
 
 function getBrowserStorage(): StorageLike | null {
   try {
@@ -109,9 +188,15 @@ export function getDefaultLlmConfig(): StoredLlmConfig {
 }
 
 function normalizeConfig(config: StoredLlmConfig): StoredLlmConfig {
+  const normalizedUrl = config.url.trim();
+  const canonicalG4fUrl =
+    config.mode === "g4f" && isG4fDefaultEndpoint(normalizedUrl)
+      ? DEFAULT_G4F_CHAT_ENDPOINT
+      : normalizedUrl;
+
   return {
     mode: config.mode,
-    url: config.url.trim(),
+    url: canonicalG4fUrl,
     model: config.model?.trim() || "",
     apiKey: config.apiKey?.trim() || "",
   };
@@ -141,7 +226,11 @@ export function readStoredLlmConfig(
 
     let normalized = normalizeConfig(parsed);
     if (normalized.mode === "openai-compatible" && isG4fDefaultEndpoint(normalized.url)) {
-      normalized = { ...normalized, mode: "g4f" };
+      normalized = {
+        ...normalized,
+        mode: "g4f",
+        url: DEFAULT_G4F_CHAT_ENDPOINT,
+      };
     }
     return normalized.url ? normalized : null;
   } catch {
@@ -180,6 +269,7 @@ function getRuntimeOptions(options: ClientGenerationOptions = {}): RuntimeOption
     signal: options.signal,
     config: options.config === undefined ? readStoredLlmConfig() : options.config,
     fetch: options.fetch || defaultFetch,
+    g4fEncryptSecret: options.g4fEncryptSecret || encryptG4fSecret,
   };
 }
 
@@ -269,11 +359,380 @@ function buildHeaders(config: StoredLlmConfig) {
   return headers;
 }
 
+function encryptG4fSecret(publicKey: string, data: string) {
+  const encryptor = new JSEncrypt();
+  encryptor.setPublicKey(publicKey);
+  const encrypted = encryptor.encrypt(data);
+  if (!encrypted) {
+    throw new Error("g4f public key encryption failed.");
+  }
+  return encrypted;
+}
+
+function resolveG4fApiBase(url: string) {
+  const parsed = new URL(url.trim());
+  return `${parsed.origin}/backend-api/v2`;
+}
+
+function buildG4fApiKeyPayload(config: StoredLlmConfig) {
+  if (config.apiKey) {
+    return config.apiKey;
+  }
+
+  return {
+    PollinationsAI: null,
+    HuggingFace: null,
+    Together: null,
+    GeminiPro: null,
+    OpenRouter: null,
+    OpenRouterFree: null,
+    Groq: null,
+    DeepInfra: null,
+    Replicate: null,
+    PuterJS: null,
+    Azure: null,
+    Nvidia: null,
+    Ollama: null,
+  };
+}
+
+async function getG4fConversationHeaders(
+  config: StoredLlmConfig,
+  runtime: RuntimeOptions,
+): Promise<Record<string, string>> {
+  const fetchImpl = ensureFetch(runtime.fetch);
+  const publicKeyUrl = `${resolveG4fApiBase(config.url)}/public-key`;
+  let response = await fetchImpl(publicKeyUrl, {
+    method: "POST",
+    headers: {
+      accept: "*/*",
+    },
+    signal: runtime.signal,
+  });
+
+  if (!response.ok) {
+    response = await fetchImpl(publicKeyUrl, {
+      headers: {
+        accept: "*/*",
+      },
+      signal: runtime.signal,
+    });
+  }
+
+  if (!response.ok) {
+    throw new Error(await readJsonError(response));
+  }
+
+  const data = (await response.json()) as G4fPublicKeyResponse;
+  if (!data.public_key || !data.data) {
+    throw new Error("g4f public-key endpoint returned an incomplete payload.");
+  }
+
+  return {
+    accept: "text/event-stream",
+    "Content-Type": "application/json",
+    "x-secret": runtime.g4fEncryptSecret(data.public_key, data.data),
+  };
+}
+
+function parseG4fEventData(streamText: string) {
+  const normalized = streamText.replace(/\r\n/g, "\n");
+  const rawEvents = normalized
+    .split("\n\n")
+    .map((event) => event.trim())
+    .filter(Boolean);
+
+  const events: G4fConversationEvent[] = [];
+  for (const rawEvent of rawEvents) {
+    const dataLines = rawEvent
+      .split("\n")
+      .filter((line) => line.startsWith("data: "))
+      .map((line) => line.slice(6));
+
+    if (dataLines.length === 0) {
+      continue;
+    }
+
+    try {
+      events.push(JSON.parse(dataLines.join("\n")) as G4fConversationEvent);
+    } catch {
+      // Ignore malformed SSE chunks and continue scanning.
+    }
+  }
+
+  return events;
+}
+
+function extractAssistantTextFromG4fEvent(event: G4fConversationEvent) {
+  if (!event) return "";
+  if (event.type === "content" && typeof event.content === "string") {
+    return event.content;
+  }
+  return "";
+}
+
+function extractAssistantTextFromG4fResponse(event: G4fConversationEvent) {
+  if (!event?.response) {
+    return "";
+  }
+
+  const choiceTexts =
+    event.response.choices?.map((choice) => {
+      const deltaContent = choice.delta?.content;
+      if (typeof deltaContent === "string") {
+        return deltaContent;
+      }
+
+      const messageContent = choice.message?.content;
+      if (typeof messageContent === "string") {
+        return messageContent;
+      }
+
+      if (Array.isArray(messageContent)) {
+        return messageContent
+          .map((part) => (typeof part?.text === "string" ? part.text : ""))
+          .join("");
+      }
+
+      return "";
+    }) || [];
+
+  return choiceTexts.join("");
+}
+
+function readG4fError(event: G4fConversationEvent) {
+  if (!event) return "";
+  if (typeof event.message === "string" && event.message.trim()) {
+    return event.message.trim();
+  }
+  if (typeof event.error === "string" && event.error.trim()) {
+    return event.error.trim();
+  }
+  if (typeof event.error === "object" && typeof event.error?.message === "string") {
+    return event.error.message.trim();
+  }
+  if (typeof event.response?.error?.message === "string") {
+    return event.response.error.message.trim();
+  }
+  return "";
+}
+
+function parseG4fConversationText(streamText: string) {
+  const events = parseG4fEventData(streamText);
+  const contentText = events.map(extractAssistantTextFromG4fEvent).join("");
+  const responseText = events.map(extractAssistantTextFromG4fResponse).join("");
+  const assistantText = contentText || responseText;
+  if (assistantText.trim()) {
+    return assistantText;
+  }
+
+  const errors = events.map(readG4fError).filter(Boolean);
+  if (errors.length > 0) {
+    throw new Error(errors.join("\n"));
+  }
+
+  throw new Error("g4f conversation endpoint returned no assistant content.");
+}
+
+async function readG4fConversationStream(
+  response: Response,
+  signal?: AbortSignal,
+) {
+  if (!response.body) {
+    throw new Error("g4f conversation endpoint returned no response body.");
+  }
+
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  let currentDataLines: string[] = [];
+  let assistantText = "";
+  const terminalErrors: string[] = [];
+  const deferredErrors: string[] = [];
+  let sawContentEvent = false;
+
+  const flushEvent = () => {
+    if (currentDataLines.length === 0) {
+      return null;
+    }
+
+    const payload = currentDataLines.join("\n");
+    currentDataLines = [];
+
+    try {
+      return JSON.parse(payload) as G4fConversationEvent;
+    } catch {
+      return null;
+    }
+  };
+
+  const handleEvent = (event: G4fConversationEvent) => {
+    if (!event) {
+      return null;
+    }
+
+    const contentText = extractAssistantTextFromG4fEvent(event);
+    if (contentText) {
+      sawContentEvent = true;
+      assistantText += contentText;
+    } else if (!sawContentEvent) {
+      const responseText = extractAssistantTextFromG4fResponse(event);
+      if (responseText) {
+        assistantText += responseText;
+      }
+    }
+
+    const responseError =
+      typeof event.response?.error?.message === "string"
+        ? event.response.error.message.trim()
+        : "";
+    if (responseError) {
+      deferredErrors.push(responseError);
+    }
+
+    if (event.type === "error" || event.type === "auth") {
+      const terminalError = readG4fError(event);
+      if (terminalError) {
+        terminalErrors.push(terminalError);
+      }
+      return "done";
+    }
+
+    if (event.type === "finish" || event.type === "usage") {
+      return "done";
+    }
+
+    return null;
+  };
+
+  while (true) {
+    if (signal?.aborted) {
+      throw new Error("The operation was aborted.");
+    }
+
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+
+    buffer += value;
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+
+    for (const rawLine of lines) {
+      const line = rawLine.replace(/\r$/, "");
+      if (line.startsWith("data: ")) {
+        currentDataLines.push(line.slice(6));
+        continue;
+      }
+
+      if (line === "") {
+        const event = flushEvent();
+        if (handleEvent(event) === "done") {
+          await reader.cancel();
+          if (assistantText.trim()) {
+            return assistantText;
+          }
+          if (terminalErrors.length > 0) {
+            throw new Error(terminalErrors.join("\n"));
+          }
+          if (deferredErrors.length > 0) {
+            throw new Error(deferredErrors.join("\n"));
+          }
+          throw new Error("g4f conversation endpoint returned no assistant content.");
+        }
+      }
+    }
+  }
+
+  const finalEvent = flushEvent();
+  handleEvent(finalEvent);
+
+  if (assistantText.trim()) {
+    return assistantText;
+  }
+  if (terminalErrors.length > 0) {
+    throw new Error(terminalErrors.join("\n"));
+  }
+  if (deferredErrors.length > 0) {
+    throw new Error(deferredErrors.join("\n"));
+  }
+
+  return parseG4fConversationText(buffer);
+}
+
+function createConversationId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `g4f-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+async function requestG4fConversationText(
+  messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
+  config: StoredLlmConfig,
+  runtime: RuntimeOptions,
+) {
+  const response = await ensureFetch(runtime.fetch)(config.url, {
+    method: "POST",
+    headers: await getG4fConversationHeaders(config, runtime),
+    body: JSON.stringify({
+      id: String(Date.now()),
+      conversation_id: createConversationId(),
+      model: config.model || DEFAULT_G4F_MODEL,
+      web_search: false,
+      provider: DEFAULT_G4F_PROVIDER,
+      messages,
+      action: "next",
+      download_media: true,
+      debug_mode: false,
+      api_key: buildG4fApiKeyPayload(config),
+      ignored: [...DEFAULT_G4F_IGNORED],
+      aspect_ratio: "16:9",
+    }),
+    signal: runtime.signal,
+  });
+
+  if (!response.ok) {
+    throw new Error(await readJsonError(response));
+  }
+
+  return readG4fConversationStream(response, runtime.signal);
+}
+
+async function fetchG4fModels(
+  config: StoredLlmConfig,
+  runtime: RuntimeOptions,
+) {
+  const response = await ensureFetch(runtime.fetch)(
+    `${resolveG4fApiBase(config.url)}/models/${DEFAULT_G4F_PROVIDER}`,
+    {
+      headers: {
+        accept: "*/*",
+        "Content-Type": "application/json",
+        "x-api-key":
+          typeof buildG4fApiKeyPayload(config) === "string"
+            ? String(buildG4fApiKeyPayload(config))
+            : "[object Object]",
+        "x-ignored": DEFAULT_G4F_IGNORED.join(" "),
+      },
+      signal: runtime.signal,
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(await readJsonError(response));
+  }
+
+  return response.json();
+}
+
 /** True for known g4f endpoint variants (used for stored-config migration). */
 export function isG4fDefaultEndpoint(url: string) {
   const normalized = url.trim().replace(/\/+$/, "");
   return (
     normalized === DEFAULT_G4F_CHAT_ENDPOINT.replace(/\/+$/, "") ||
+    normalized === "https://g4f.space/backend-api/v2" ||
+    normalized === "https://g4f.space/api/pollinations/chat/completions" ||
     normalized === "https://g4f.space/ai"
   );
 }
@@ -348,17 +807,90 @@ function tryParseSpecObject(text: string): SoneSpec | null {
   return null;
 }
 
+function isLooseElementNode(value: unknown): value is {
+  type: string;
+  props?: Record<string, unknown>;
+  children?: unknown[];
+} {
+  return (
+    value != null &&
+    typeof value === "object" &&
+    typeof (value as { type?: unknown }).type === "string"
+  );
+}
+
+function coerceLooseSpecObject(value: unknown): SoneSpec | null {
+  if (value == null || typeof value !== "object") {
+    return null;
+  }
+
+  const rootValue = (value as { root?: unknown }).root;
+  if (!isLooseElementNode(rootValue)) {
+    return null;
+  }
+
+  const elements: Record<string, SoneElement> = {};
+  let generatedId = 0;
+
+  const visit = (node: unknown, id: string): string | null => {
+    if (!isLooseElementNode(node)) {
+      return null;
+    }
+
+    const props =
+      node.props != null && typeof node.props === "object"
+        ? ({ ...(node.props as Record<string, unknown>) } as Record<string, unknown>)
+        : {};
+    const children: string[] = [];
+
+    for (const child of Array.isArray(node.children) ? node.children : []) {
+      if (typeof child === "string") {
+        children.push(child);
+        continue;
+      }
+
+      const childId = `${id}-child-${generatedId++}`;
+      const normalizedChildId = visit(child, childId);
+      if (normalizedChildId) {
+        children.push(normalizedChildId);
+      }
+    }
+
+    elements[id] = {
+      type: node.type as SoneElement["type"],
+      props: props as SoneElement["props"],
+      children,
+    };
+
+    return id;
+  };
+
+  const rootId = visit(rootValue, "root");
+  if (!rootId) {
+    return null;
+  }
+
+  return {
+    root: rootId,
+    elements,
+  };
+}
+
 function parseOpenAiCompatSpec(text: string): SoneSpec {
   const normalized = stripMarkdownFences(text);
 
   const compiler = createSpecStreamCompiler<SoneSpec>();
   compiler.push(normalized.endsWith("\n") ? normalized : `${normalized}\n`);
-  const compiled = prepareSpec(compiler.getResult());
+  const compilerResult = compiler.getResult();
+  const compiled =
+    prepareSpec(compilerResult) ?? prepareSpec(coerceLooseSpecObject(compilerResult));
   if (compiled) {
     return compiled;
   }
 
-  const parsed = prepareSpec(tryParseSpecObject(normalized));
+  const parsedObject = tryParseSpecObject(normalized);
+  const parsed =
+    prepareSpec(parsedObject) ?? prepareSpec(coerceLooseSpecObject(parsedObject));
   if (parsed) {
     return parsed;
   }
@@ -369,7 +901,10 @@ function parseOpenAiCompatSpec(text: string): SoneSpec {
     extractedCompiler.push(
       extractedJsonl.endsWith("\n") ? extractedJsonl : `${extractedJsonl}\n`,
     );
-    const extractedCompiled = prepareSpec(extractedCompiler.getResult());
+    const extractedCompilerResult = extractedCompiler.getResult();
+    const extractedCompiled =
+      prepareSpec(extractedCompilerResult) ??
+      prepareSpec(coerceLooseSpecObject(extractedCompilerResult));
     if (extractedCompiled) {
       return extractedCompiled;
     }
@@ -399,9 +934,21 @@ function extractJsonlPatchLines(text: string): string | null {
       }
 
       try {
-        const parsed = JSON.parse(line) as { op?: unknown; path?: unknown };
-        if (typeof parsed.op === "string" && typeof parsed.path === "string") {
-          patchLines.push(line);
+        const parsed = JSON.parse(line) as {
+          op?: unknown;
+          path?: unknown;
+          value?: unknown;
+        };
+        if (typeof parsed.path === "string") {
+          patchLines.push(
+            typeof parsed.op === "string"
+              ? line
+              : JSON.stringify({
+                  op: "add",
+                  path: parsed.path,
+                  value: parsed.value,
+                }),
+          );
         }
       } catch {
         // ignore non-JSON lines
@@ -420,14 +967,72 @@ async function requestG4fSpec(
   config: StoredLlmConfig,
   runtime: RuntimeOptions,
 ): Promise<SoneSpec> {
-  return requestOpenAiLikeSpec(payload, config, runtime, config.model || DEFAULT_G4F_MODEL);
+  const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
+    {
+      role: "system" as const,
+      content: createOpenAiCompatSystemPrompt(),
+    },
+    {
+      role: "user" as const,
+      content: buildPatchOnlyUserPrompt(payload),
+    },
+  ];
+
+  for (let attempt = 0; attempt <= MAX_AUTO_REPAIR_ATTEMPTS; attempt += 1) {
+    const content = await requestG4fConversationText(messages, config, runtime);
+    if (!content.trim()) {
+      throw new Error("g4f conversation endpoint returned an empty assistant message.");
+    }
+
+    messages.push({ role: "assistant", content });
+
+    try {
+      const spec = parseOpenAiCompatSpec(content);
+      const issues = validateSoneSpec(spec);
+      if (issues.length === 0) {
+        return spec;
+      }
+      if (attempt >= MAX_AUTO_REPAIR_ATTEMPTS) {
+        throw new Error(issues.map((issue) => `${issue.path}: ${issue.message}`).join("\n"));
+      }
+      messages.push({
+        role: "user",
+        content: buildRepairPrompt(
+          payload,
+          issues.map((issue) => `${issue.path}: ${issue.message}`).join("\n"),
+          attempt + 1,
+        ),
+      });
+    } catch (error) {
+      if (attempt >= MAX_AUTO_REPAIR_ATTEMPTS) {
+        throw error;
+      }
+      messages.push({
+        role: "user",
+        content: buildRepairPrompt(
+          payload,
+          error instanceof Error ? error.message : String(error),
+          attempt + 1,
+        ),
+      });
+    }
+  }
+
+  throw new Error("OpenAI-compatible endpoint did not produce a valid spec.");
+}
+
+async function requestOpenAiCompatSpec(
+  payload: GeneratePayload,
+  config: StoredLlmConfig,
+  runtime: RuntimeOptions,
+): Promise<SoneSpec> {
+  return requestOpenAiLikeSpec(payload, config, runtime);
 }
 
 async function requestOpenAiLikeSpec(
   payload: GeneratePayload,
   config: StoredLlmConfig,
   runtime: RuntimeOptions,
-  modelOverride?: string,
 ): Promise<SoneSpec> {
   const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
     {
@@ -446,9 +1051,8 @@ async function requestOpenAiLikeSpec(
       temperature: 0.4,
       stream: false,
     };
-    const model = modelOverride || config.model;
-    if (model) {
-      body.model = model;
+    if (config.model) {
+      body.model = config.model;
     }
 
     const response = await ensureFetch(runtime.fetch)(config.url, {
@@ -505,14 +1109,6 @@ async function requestOpenAiLikeSpec(
   throw new Error("OpenAI-compatible endpoint did not produce a valid spec.");
 }
 
-async function requestOpenAiCompatSpec(
-  payload: GeneratePayload,
-  config: StoredLlmConfig,
-  runtime: RuntimeOptions,
-): Promise<SoneSpec> {
-  return requestOpenAiLikeSpec(payload, config, runtime);
-}
-
 export async function testLlmConnection(
   config: StoredLlmConfig,
   options: Omit<ClientGenerationOptions, "signal" | "config"> = {},
@@ -542,23 +1138,12 @@ export async function testLlmConnection(
   }
 
   if (normalized.mode === "g4f") {
-    const body: Record<string, unknown> = {
-      model: normalized.model || DEFAULT_G4F_MODEL,
-      messages: [{ role: "user", content: DEFAULT_OPENAI_TEST_MESSAGE }],
-      stream: false,
-      max_tokens: 8,
-      temperature: 0,
-    };
-
-    const response = await ensureFetch(runtime.fetch)(normalized.url, {
-      method: "POST",
-      headers: buildHeaders(normalized),
-      body: JSON.stringify(body),
-    });
-
-    if (!response.ok) {
-      throw new Error(await readJsonError(response));
-    }
+    await requestG4fConversationText(
+      [{ role: "user", content: DEFAULT_OPENAI_TEST_MESSAGE }],
+      normalized,
+      runtime,
+    );
+    await fetchG4fModels(normalized, runtime);
 
     return {
       mode: normalized.mode,

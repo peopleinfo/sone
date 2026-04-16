@@ -491,7 +491,7 @@ export default function App() {
                   Default model: <code>{DEFAULT_G4F_MODEL}</code>
                 </div>
                 <div>
-                  Uses fetch with OpenAI-compatible payloads.
+                  Uses g4f public-key bootstrap, conversation SSE, and model discovery.
                 </div>
               </div>
             ) : (
