@@ -240,11 +240,13 @@ export const soneCatalog = defineCatalog(soneSchema, {
         rows: z.array(tableRow).min(1),
         spacing: z.array(z.number()).optional(),
       }),
-      description: "Prompt-friendly table. Emit rows and cells only; the renderer creates TableRow and TableCell nodes.",
+      description: "Prompt-friendly table. Emit rows and cells only; the renderer creates TableRow and TableCell nodes. Cells inherit baseStyleProps—use padding on cells for readability. Use spacing:[columnGap, rowGap] on the table. Set width on cells for consistent column sizing.",
       example: {
+        width: 500,
+        spacing: [8, 0],
         rows: [
-          { cells: [{ text: "Name", header: true }, { text: "Score", header: true }] },
-          { cells: [{ text: "Ari" }, { text: "98" }] },
+          { cells: [{ text: "Name", header: true, width: 200, padding: 8 }, { text: "Score", header: true, width: 100, padding: 8 }] },
+          { cells: [{ text: "Ari", padding: 8, width: 200 }, { text: "98", padding: 8, width: 100 }] },
         ],
       },
     },

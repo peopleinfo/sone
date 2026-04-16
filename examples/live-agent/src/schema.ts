@@ -94,6 +94,7 @@ export const soneSchema = defineSchema(
       "Do not place text props (text/segments/font/weight/color) on non-Text elements.",
       "For Text, prefer props.segments with explicit text and optional style objects.",
       "For Table, do not emit TableRow or TableCell elements. Use Table.props.rows[].cells[]; the renderer creates wrapper nodes.",
+      "For Table cells, always set padding (e.g. 8) and width for each cell so columns are properly sized and readable. Use spacing:[colGap, rowGap] on the Table.",
       "For List, do not emit ListItem elements. Use List.props.items[]; the renderer creates wrapper nodes.",
       "Keep numeric dimensions inside practical canvas bounds and avoid huge trees.",
       "Use patch-only edits when refining an existing spec.",

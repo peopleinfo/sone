@@ -441,6 +441,17 @@ function applyPathProps(props: PathProps) {
   return node;
 }
 
+function cellHasPadding(cell: TableCellSpec): boolean {
+  const c = cell as Record<string, unknown>;
+  return (
+    c.padding !== undefined ||
+    c.paddingTop !== undefined ||
+    c.paddingBottom !== undefined ||
+    c.paddingLeft !== undefined ||
+    c.paddingRight !== undefined
+  );
+}
+
 function applyTableProps(props: TableProps) {
   const rows = props.rows.map((row) =>
     TableRow(
@@ -450,13 +461,21 @@ function applyTableProps(props: TableProps) {
           assignProps(text, { weight: "bold" });
         }
         const tableCell = TableCell(text);
-        assignProps(tableCell, omitKeys(cell, ["segments", "text", "style", "header"]));
+        const cellProps = omitKeys(cell, ["segments", "text", "style", "header"]);
+        if (!cellHasPadding(cell)) {
+          assignProps(tableCell, { paddingTop: 6, paddingBottom: 6, paddingLeft: 10, paddingRight: 10 });
+        }
+        assignProps(tableCell, cellProps);
         return tableCell;
       }),
     ),
   );
   const node = Table(...rows);
-  assignProps(node, omitKeys(props, ["rows"]));
+  const tableProps = omitKeys(props, ["rows"]);
+  if (!tableProps.spacing && !tableProps.gap) {
+    assignProps(node, { spacing: [8, 0] });
+  }
+  assignProps(node, tableProps);
   return node;
 }
 
