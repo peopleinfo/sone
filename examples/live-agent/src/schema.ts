@@ -1,5 +1,6 @@
 import { defineSchema } from "@json-render/core";
 import type { z } from "zod";
+import { PROMPT_EXAMPLES, DESIGN_RULES } from "./prompt-examples";
 
 type PromptCatalog = {
   components?: Record<
@@ -81,6 +82,20 @@ export const soneSchema = defineSchema(
         "Use patch-only edits when refining an existing spec.",
         ...(context.options.customRules ?? []),
       );
+
+      lines.push(
+        "",
+        "DESIGN BEST PRACTICES:",
+        ...DESIGN_RULES,
+      );
+
+      for (const example of PROMPT_EXAMPLES) {
+        lines.push(
+          "",
+          `REFERENCE SPEC — ${example.label}:`,
+          JSON.stringify(example.spec),
+        );
+      }
 
       return lines.join("\n");
     },

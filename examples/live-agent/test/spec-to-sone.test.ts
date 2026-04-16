@@ -389,10 +389,13 @@ describe("specToSoneNodeLenient", () => {
       },
     };
 
-    expect(() => specToSoneNode(spec)).toThrow();
-    const node = specToSoneNodeLenient(spec) as { type: string; children: unknown[] };
-    expect(node).not.toBeNull();
-    expect(node.type).toBe("column");
+    const strictNode = specToSoneNode(spec) as { type: string };
+    expect(strictNode).not.toBeNull();
+    expect(strictNode.type).toBe("column");
+
+    const lenientNode = specToSoneNodeLenient(spec) as { type: string; children: unknown[] };
+    expect(lenientNode).not.toBeNull();
+    expect(lenientNode.type).toBe("column");
   });
 
   it("recovers and builds when root references a missing element but others exist", () => {

@@ -59,6 +59,8 @@ export default function App() {
   const [previewSpec, setPreviewSpec] = useState<SoneSpec | null>(null);
   const [canvas, setCanvas] = useState<HTMLCanvasElement | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
+  const previewThrottleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingPreviewRef = useRef<SoneSpec | null>(null);
   const [isSetupDialogOpen, setIsSetupDialogOpen] = useState(false);
   const [connectionState, setConnectionState] = useState<ConnectionState>({
     status: "idle",
@@ -89,6 +91,25 @@ export default function App() {
     setIsSetupDialogOpen(true);
   }, [storedConfig]);
 
+  const flushPreview = useCallback(() => {
+    if (previewThrottleRef.current !== null) {
+      clearTimeout(previewThrottleRef.current);
+      previewThrottleRef.current = null;
+    }
+    setPreviewSpec(pendingPreviewRef.current);
+    pendingPreviewRef.current = null;
+  }, []);
+
+  const throttledSetPreview = useCallback((next: SoneSpec | null) => {
+    pendingPreviewRef.current = next;
+    if (next === null) {
+      flushPreview();
+      return;
+    }
+    if (previewThrottleRef.current !== null) return;
+    previewThrottleRef.current = setTimeout(flushPreview, 300);
+  }, [flushPreview]);
+
   const runStream = useCallback(async () => {
       controllerRef.current?.abort();
       const controller = new AbortController();
@@ -101,7 +122,7 @@ export default function App() {
           { prompt, previousSpec: spec },
           {
             onSpec: (next) => setSpec(next),
-            onPartialSpec: (next) => setPreviewSpec(next),
+            onPartialSpec: throttledSetPreview,
           },
           controller.signal,
           storedConfig ? { config: storedConfig } : {},
@@ -113,10 +134,15 @@ export default function App() {
         if (controllerRef.current === controller) {
           controllerRef.current = null;
           setIsStreaming(false);
+          if (previewThrottleRef.current !== null) {
+            clearTimeout(previewThrottleRef.current);
+            previewThrottleRef.current = null;
+          }
+          pendingPreviewRef.current = null;
           setPreviewSpec(null);
         }
       }
-    }, [prompt, spec, storedConfig]);
+    }, [prompt, spec, storedConfig, throttledSetPreview]);
 
   const handleSend = useCallback(() => {
     if (!isChatReady || !storedConfig) {
@@ -131,6 +157,11 @@ export default function App() {
   const handleReset = useCallback(() => {
     controllerRef.current?.abort();
     controllerRef.current = null;
+    if (previewThrottleRef.current !== null) {
+      clearTimeout(previewThrottleRef.current);
+      previewThrottleRef.current = null;
+    }
+    pendingPreviewRef.current = null;
     setSpec(null);
     setPreviewSpec(null);
     setCanvas(null);
@@ -217,6 +248,8 @@ export default function App() {
   );
 
   const activeSpec = previewSpec ?? spec;
+  const renderingRef = useRef(false);
+  const pendingRenderRef = useRef(false);
 
   useEffect(() => {
     if (!activeSpec) {
@@ -227,22 +260,20 @@ export default function App() {
     }
 
     let cancelled = false;
-    let rafId: number | null = null;
-
-    function scheduleRender() {
-      rafId = requestAnimationFrame(() => {
-        rafId = null;
-        if (cancelled) return;
-        void doRender();
-      });
-    }
 
     async function doRender() {
+      if (renderingRef.current) {
+        pendingRenderRef.current = true;
+        return;
+      }
+      renderingRef.current = true;
+      pendingRenderRef.current = false;
+
       try {
         const node = previewSpec
           ? specToSoneNodeLenient(activeSpec)
           : specToSoneNode(activeSpec);
-        if (!node) return;
+        if (!node || cancelled) return;
         const nextCanvas = await render<HTMLCanvasElement>(node, browserRenderer);
         if (!cancelled) {
           setLastNode(node);
@@ -253,14 +284,21 @@ export default function App() {
         if (!cancelled) {
           setRenderError(error instanceof Error ? error.message : String(error));
         }
+      } finally {
+        renderingRef.current = false;
+        if (pendingRenderRef.current && !cancelled) {
+          pendingRenderRef.current = false;
+        }
       }
     }
 
-    scheduleRender();
+    const rafId = requestAnimationFrame(() => {
+      if (!cancelled) void doRender();
+    });
 
     return () => {
       cancelled = true;
-      if (rafId !== null) cancelAnimationFrame(rafId);
+      cancelAnimationFrame(rafId);
     };
   }, [activeSpec, previewSpec]);
 

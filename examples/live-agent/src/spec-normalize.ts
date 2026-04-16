@@ -65,6 +65,29 @@ function flattenNumberValues(value: unknown, output: number[]) {
   }
 }
 
+const NUMERIC_STYLE_KEYS = new Set([
+  "size", "letterSpacing", "wordSpacing", "lineHeight",
+  "underline", "lineThrough", "overline", "strokeWidth", "offsetY",
+  "width", "height", "minWidth", "minHeight", "maxWidth", "maxHeight",
+  "padding", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
+  "margin", "marginTop", "marginRight", "marginBottom", "marginLeft",
+  "gap", "rowGap", "columnGap", "opacity", "rotation",
+  "translateX", "translateY", "borderWidth", "cornerSmoothing",
+  "flexGrow", "flexShrink", "flex", "aspectRatio",
+]);
+
+function coerceNumericProps(obj: Record<string, unknown>): Record<string, unknown> {
+  for (const key of Object.keys(obj)) {
+    if (NUMERIC_STYLE_KEYS.has(key) && typeof obj[key] === "string") {
+      const parsed = parseFloat(obj[key] as string);
+      if (Number.isFinite(parsed)) {
+        obj[key] = parsed;
+      }
+    }
+  }
+  return obj;
+}
+
 function normalizeTextStyleAliases(value: unknown): unknown {
   if (!isRecord(value)) return value;
   const normalized: Record<string, unknown> = { ...value };
@@ -86,6 +109,9 @@ function normalizeTextStyleAliases(value: unknown): unknown {
   delete normalized.fontSize;
   delete normalized.textAlign;
   delete normalized.fontFamily;
+
+  coerceNumericProps(normalized);
+
   return normalized;
 }
 
@@ -151,6 +177,8 @@ function normalizeElementProps(
   props: SoneSpec["elements"][string]["props"],
 ): SoneSpec["elements"][string]["props"] {
   let normalized: Record<string, unknown> = { ...(props as Record<string, unknown>) };
+
+  coerceNumericProps(normalized);
 
   if (type === "Text" || type === "TextDefault") {
     normalized = normalizeTextStyleAliases(normalized) as Record<string, unknown>;
@@ -348,7 +376,9 @@ export function normalizeSpecStructure(spec: SoneSpec | null): SoneSpec | null {
   }
 
   for (const element of Object.values(normalizedElements)) {
-    element.children = element.children.map(resolveElementId).filter((child) => child.length > 0);
+    element.children = element.children
+      .map(resolveElementId)
+      .filter((child) => child.length > 0 && normalizedElements[child] !== undefined);
   }
 
   let resolvedRoot = resolveElementId(spec.root);

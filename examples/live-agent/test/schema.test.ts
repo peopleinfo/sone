@@ -45,11 +45,12 @@ describe("validateSoneSpec", () => {
     ).toBe(true);
   });
 
-  it("rejects invalid child references", () => {
+  it("auto-strips dangling child references during normalization", () => {
     const spec = baseSpec();
     spec.elements.root.children.push("missing-child");
 
     const issues = validateSoneSpec(spec);
-    expect(issues.some((issue) => issue.message.includes('Child "missing-child" does not exist.'))).toBe(true);
+    expect(issues.some((issue) => issue.message.includes('Child "missing-child" does not exist.'))).toBe(false);
+    expect(issues).toHaveLength(0);
   });
 });
