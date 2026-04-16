@@ -402,6 +402,54 @@ describe("createGenerationTextStream", () => {
     expect(spec?.elements.tableSection.children).toEqual(["grandTotal"]);
   });
 
+  it("reconciles a single suffix-drift child reference", async () => {
+    const openAiConfig: StoredLlmConfig = {
+      mode: "openai-compatible",
+      url: "http://localhost:11434/v1/chat/completions",
+      model: "qwen3.5-flash",
+      apiKey: "",
+    };
+
+    const fetchMock: typeof fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  root: "root",
+                  elements: {
+                    root: {
+                      type: "Column",
+                      props: {},
+                      children: ["text"],
+                    },
+                    text1: {
+                      type: "Text",
+                      props: { text: "Recovered child id" },
+                      children: [],
+                    },
+                  },
+                }),
+              },
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      )) as typeof fetch;
+
+    const spec = await generateSpec(
+      { prompt: "Generate a simple text layout" },
+      undefined,
+      { config: openAiConfig, fetch: fetchMock },
+    );
+
+    expect(spec?.elements.root.children).toEqual(["text1"]);
+  });
+
   it("persists stored LLM config to storage", () => {
     const values = new Map<string, string>();
     const storage = {

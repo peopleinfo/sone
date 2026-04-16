@@ -3,7 +3,7 @@ import {
   createSpecStreamCompiler,
   type Spec,
 } from "@json-render/core";
-import { JSEncrypt } from "jsencrypt";
+import JSEncrypt from "jsencrypt";
 import { soneCatalog } from "@/catalog";
 import { createFixtureJsonlStream, createSpecJsonlStream } from "@/fixture-stream";
 import { prepareSpec } from "@/spec-normalize";
@@ -122,8 +122,20 @@ type G4fConversationEvent =
   | null;
 
 type G4fEncryptSecret = (publicKey: string, data: string) => string;
+type JSEncryptConstructor = new () => {
+  setPublicKey(publicKey: string): void;
+  encrypt(data: string): string | false;
+};
 
 const DEFAULT_G4F_PROVIDER = "AnyProvider";
+const G4F_STATIC_FALLBACK_PROVIDERS = [
+  "DeepInfra",
+  "Qwen",
+  "Groq",
+  "Nvidia",
+  "OpenRouterFree",
+  "PollinationsAI",
+];
 const DEFAULT_G4F_IGNORED = [
   "AIBadgr",
   "Anthropic",
@@ -360,7 +372,21 @@ function buildHeaders(config: StoredLlmConfig) {
 }
 
 function encryptG4fSecret(publicKey: string, data: string) {
-  const encryptor = new JSEncrypt();
+  const encryptCtor =
+    (
+      JSEncrypt as unknown as {
+        JSEncrypt?: JSEncryptConstructor;
+        default?: JSEncryptConstructor;
+      }
+    ).JSEncrypt ??
+    (
+      JSEncrypt as unknown as {
+        JSEncrypt?: JSEncryptConstructor;
+        default?: JSEncryptConstructor;
+      }
+    ).default ??
+    (JSEncrypt as unknown as JSEncryptConstructor);
+  const encryptor = new encryptCtor();
   encryptor.setPublicKey(publicKey);
   const encrypted = encryptor.encrypt(data);
   if (!encrypted) {
@@ -515,6 +541,93 @@ function readG4fError(event: G4fConversationEvent) {
     return event.response.error.message.trim();
   }
   return "";
+}
+
+function isProviderRetryableError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("token limit") ||
+    lower.includes("rate limit") ||
+    lower.includes("quota exceeded") ||
+    lower.includes("limit exceeded") ||
+    lower.includes("too many requests") ||
+    lower.includes("429")
+  );
+}
+
+type G4fProviderInfo = {
+  name: string;
+  active_by_default?: boolean;
+  auth?: boolean;
+  live?: number;
+  nodriver?: boolean;
+  image?: number;
+  video?: number;
+  audio?: number;
+};
+
+const PROVIDER_CACHE_TTL_MS = 5 * 60 * 1000;
+let cachedFallbackProviders: string[] | null = null;
+let cachedFallbackTimestamp = 0;
+
+const ignoredSet = new Set<string>(DEFAULT_G4F_IGNORED);
+
+function filterFallbackProviders(providers: G4fProviderInfo[]): string[] {
+  return providers
+    .filter(
+      (p) =>
+        p.active_by_default === true &&
+        p.auth === false &&
+        p.nodriver === false &&
+        typeof p.live === "number" &&
+        p.live > 0 &&
+        p.name !== DEFAULT_G4F_PROVIDER &&
+        !ignoredSet.has(p.name),
+    )
+    .sort((a, b) => (b.live ?? 0) - (a.live ?? 0))
+    .map((p) => p.name);
+}
+
+async function fetchFallbackProviders(
+  config: StoredLlmConfig,
+  runtime: RuntimeOptions,
+): Promise<string[]> {
+  const now = Date.now();
+  if (cachedFallbackProviders && now - cachedFallbackTimestamp < PROVIDER_CACHE_TTL_MS) {
+    return cachedFallbackProviders;
+  }
+
+  try {
+    const response = await ensureFetch(runtime.fetch)(
+      `${resolveG4fApiBase(config.url)}/providers`,
+      {
+        headers: { accept: "application/json" },
+        signal: runtime.signal,
+      },
+    );
+
+    if (!response.ok) {
+      return cachedFallbackProviders ?? G4F_STATIC_FALLBACK_PROVIDERS;
+    }
+
+    const data = (await response.json()) as G4fProviderInfo[];
+    const providers = filterFallbackProviders(data);
+    if (providers.length > 0) {
+      cachedFallbackProviders = providers;
+      cachedFallbackTimestamp = now;
+      return providers;
+    }
+  } catch {
+    // Fall through to static list on network failure.
+  }
+
+  return cachedFallbackProviders ?? G4F_STATIC_FALLBACK_PROVIDERS;
+}
+
+/** @internal Exposed for testing. */
+export function resetProviderCache() {
+  cachedFallbackProviders = null;
+  cachedFallbackTimestamp = 0;
 }
 
 function parseG4fConversationText(streamText: string) {
@@ -672,31 +785,282 @@ async function requestG4fConversationText(
   config: StoredLlmConfig,
   runtime: RuntimeOptions,
 ) {
-  const response = await ensureFetch(runtime.fetch)(config.url, {
-    method: "POST",
-    headers: await getG4fConversationHeaders(config, runtime),
-    body: JSON.stringify({
-      id: String(Date.now()),
-      conversation_id: createConversationId(),
-      model: config.model || DEFAULT_G4F_MODEL,
-      web_search: false,
-      provider: DEFAULT_G4F_PROVIDER,
-      messages,
-      action: "next",
-      download_media: true,
-      debug_mode: false,
-      api_key: buildG4fApiKeyPayload(config),
-      ignored: [...DEFAULT_G4F_IGNORED],
-      aspect_ratio: "16:9",
-    }),
-    signal: runtime.signal,
-  });
+  let lastError: Error | null = null;
+  let fallbackProviders: string[] | null = null;
 
-  if (!response.ok) {
-    throw new Error(await readJsonError(response));
+  const getProvider = (attempt: number) => {
+    if (attempt === 0) return DEFAULT_G4F_PROVIDER;
+    return (fallbackProviders ?? G4F_STATIC_FALLBACK_PROVIDERS)[(attempt - 1) % (fallbackProviders ?? G4F_STATIC_FALLBACK_PROVIDERS).length];
+  };
+  const maxAttempts = () => 1 + (fallbackProviders ?? G4F_STATIC_FALLBACK_PROVIDERS).length;
+
+  for (let attempt = 0; attempt < maxAttempts(); attempt++) {
+    const provider = getProvider(attempt);
+    try {
+      const response = await ensureFetch(runtime.fetch)(config.url, {
+        method: "POST",
+        headers: await getG4fConversationHeaders(config, runtime),
+        body: JSON.stringify({
+          id: String(Date.now()),
+          conversation_id: createConversationId(),
+          model: config.model || DEFAULT_G4F_MODEL,
+          web_search: false,
+          provider,
+          messages,
+          action: "next",
+          download_media: true,
+          debug_mode: false,
+          api_key: buildG4fApiKeyPayload(config),
+          ignored: [...DEFAULT_G4F_IGNORED],
+          aspect_ratio: "16:9",
+        }),
+        signal: runtime.signal,
+      });
+
+      if (!response.ok) {
+        const errorMessage = await readJsonError(response);
+        if (isProviderRetryableError(errorMessage) && attempt < maxAttempts() - 1) {
+          if (!fallbackProviders) fallbackProviders = await fetchFallbackProviders(config, runtime);
+          lastError = new Error(errorMessage);
+          continue;
+        }
+        throw new Error(errorMessage);
+      }
+
+      return await readG4fConversationStream(response, runtime.signal);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (isProviderRetryableError(message) && attempt < maxAttempts() - 1) {
+        if (!fallbackProviders) fallbackProviders = await fetchFallbackProviders(config, runtime);
+        lastError = error instanceof Error ? error : new Error(message);
+        continue;
+      }
+      throw error;
+    }
   }
 
-  return readG4fConversationStream(response, runtime.signal);
+  throw lastError ?? new Error("g4f: all provider attempts exhausted.");
+}
+
+function createG4fPatchStream(
+  payload: GeneratePayload,
+  config: StoredLlmConfig,
+  runtime: RuntimeOptions,
+) {
+  const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
+    {
+      role: "system",
+      content: createOpenAiCompatSystemPrompt(),
+    },
+    {
+      role: "user",
+      content: buildPatchOnlyUserPrompt(payload),
+    },
+  ];
+
+  return new ReadableStream<string>({
+    async start(controller) {
+      let response: Response | null = null;
+      let reader: ReadableStreamDefaultReader<string> | null = null;
+      let currentDataLines: string[] = [];
+      let buffer = "";
+      let sawContentEvent = false;
+
+      const flushEvent = () => {
+        if (currentDataLines.length === 0) {
+          return null;
+        }
+
+        const payloadText = currentDataLines.join("\n");
+        currentDataLines = [];
+
+        try {
+          return JSON.parse(payloadText) as G4fConversationEvent;
+        } catch {
+          return null;
+        }
+      };
+
+      const closeStream = async () => {
+        try {
+          await reader?.cancel();
+        } catch {
+          // Ignore reader cancellation failures during teardown.
+        } finally {
+          controller.close();
+        }
+      };
+
+      let lastStreamError: Error | null = null;
+      let fallbackProviders: string[] | null = null;
+
+      const getProvider = (attempt: number) => {
+        if (attempt === 0) return DEFAULT_G4F_PROVIDER;
+        return (fallbackProviders ?? G4F_STATIC_FALLBACK_PROVIDERS)[(attempt - 1) % (fallbackProviders ?? G4F_STATIC_FALLBACK_PROVIDERS).length];
+      };
+      const maxAttempts = () => 1 + (fallbackProviders ?? G4F_STATIC_FALLBACK_PROVIDERS).length;
+
+      for (let providerAttempt = 0; providerAttempt < maxAttempts(); providerAttempt++) {
+        const provider = getProvider(providerAttempt);
+        try {
+          response = await ensureFetch(runtime.fetch)(config.url, {
+            method: "POST",
+            headers: await getG4fConversationHeaders(config, runtime),
+            body: JSON.stringify({
+              id: String(Date.now()),
+              conversation_id: createConversationId(),
+              model: config.model || DEFAULT_G4F_MODEL,
+              web_search: false,
+              provider,
+              messages,
+              action: "next",
+              download_media: true,
+              debug_mode: false,
+              api_key: buildG4fApiKeyPayload(config),
+              ignored: [...DEFAULT_G4F_IGNORED],
+              aspect_ratio: "16:9",
+            }),
+            signal: runtime.signal,
+          });
+
+          if (!response.ok) {
+            const errorMessage = await readJsonError(response);
+            if (isProviderRetryableError(errorMessage) && providerAttempt < maxAttempts() - 1) {
+              if (!fallbackProviders) fallbackProviders = await fetchFallbackProviders(config, runtime);
+              lastStreamError = new Error(errorMessage);
+              continue;
+            }
+            throw new Error(errorMessage);
+          }
+          if (!response.body) {
+            throw new Error("g4f conversation endpoint returned no response body.");
+          }
+
+          reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+          buffer = "";
+          currentDataLines = [];
+          sawContentEvent = false;
+
+          while (true) {
+            if (runtime.signal?.aborted) {
+              throw new Error("The operation was aborted.");
+            }
+
+            const { done, value } = await reader.read();
+            if (done) {
+              break;
+            }
+
+            buffer += value;
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+
+            for (const rawLine of lines) {
+              const line = rawLine.replace(/\r$/, "");
+              if (line.startsWith("data: ")) {
+                currentDataLines.push(line.slice(6));
+                continue;
+              }
+
+              if (line !== "") {
+                continue;
+              }
+
+              const event = flushEvent();
+              if (!event) {
+                continue;
+              }
+
+              const contentText = extractAssistantTextFromG4fEvent(event);
+              if (contentText) {
+                sawContentEvent = true;
+                controller.enqueue(contentText);
+              } else if (!sawContentEvent) {
+                const responseText = extractAssistantTextFromG4fResponse(event);
+                if (responseText) {
+                  controller.enqueue(responseText);
+                }
+              }
+
+              const terminalError = readG4fError(event);
+              if ((event.type === "error" || event.type === "auth") && terminalError) {
+                if (isProviderRetryableError(terminalError) && providerAttempt < maxAttempts() - 1) {
+                  if (!fallbackProviders) fallbackProviders = await fetchFallbackProviders(config, runtime);
+                  lastStreamError = new Error(terminalError);
+                  await reader.cancel();
+                  reader = null;
+                  throw Object.assign(new Error(terminalError), { _retryable: true });
+                }
+                throw new Error(terminalError);
+              }
+
+              if (event.type === "finish" || event.type === "usage") {
+                await closeStream();
+                return;
+              }
+            }
+          }
+
+          const finalEvent = flushEvent();
+          if (finalEvent) {
+            const contentText = extractAssistantTextFromG4fEvent(finalEvent);
+            if (contentText) {
+              controller.enqueue(contentText);
+            } else if (!sawContentEvent) {
+              const responseText = extractAssistantTextFromG4fResponse(finalEvent);
+              if (responseText) {
+                controller.enqueue(responseText);
+              }
+            }
+
+            const terminalError = readG4fError(finalEvent);
+            if ((finalEvent.type === "error" || finalEvent.type === "auth") && terminalError) {
+              if (isProviderRetryableError(terminalError) && providerAttempt < maxAttempts() - 1) {
+                if (!fallbackProviders) fallbackProviders = await fetchFallbackProviders(config, runtime);
+                lastStreamError = new Error(terminalError);
+                continue;
+              }
+              throw new Error(terminalError);
+            }
+          }
+
+          controller.close();
+          return;
+        } catch (error) {
+          const isRetryable =
+            (error instanceof Error && (error as Error & { _retryable?: boolean })._retryable === true) ||
+            (error instanceof Error && isProviderRetryableError(error.message) && providerAttempt < maxAttempts() - 1);
+
+          if (isRetryable) {
+            try {
+              await reader?.cancel();
+            } catch {
+              // Ignore cancellation errors during retry.
+            }
+            reader = null;
+            if (!fallbackProviders) fallbackProviders = await fetchFallbackProviders(config, runtime);
+            lastStreamError = error instanceof Error ? error : new Error(String(error));
+            continue;
+          }
+
+          try {
+            await reader?.cancel();
+          } catch {
+            // Ignore reader cancellation failures when surfacing the primary error.
+          }
+          controller.error(error instanceof Error ? error : new Error(String(error)));
+          return;
+        }
+      }
+
+      controller.error(lastStreamError ?? new Error("g4f: all provider attempts exhausted."));
+    },
+    async cancel() {
+      if (runtime.signal?.aborted) {
+        return;
+      }
+    },
+  });
 }
 
 async function fetchG4fModels(
@@ -794,7 +1158,7 @@ function tryParseSpecObject(text: string): SoneSpec | null {
     const parsed = JSON.parse(text) as SoneSpec;
     if (
       parsed != null &&
-      typeof parsed.root === "string" &&
+      typeof parsed === "object" &&
       parsed.elements != null &&
       typeof parsed.elements === "object"
     ) {
@@ -876,26 +1240,56 @@ function coerceLooseSpecObject(value: unknown): SoneSpec | null {
   };
 }
 
-function parseOpenAiCompatSpec(text: string): SoneSpec {
-  const normalized = stripMarkdownFences(text);
+function extractEmbeddedJson(text: string): string | null {
+  const fencePattern = /```(?:json|jsonl)?\s*\n([\s\S]*?)```/g;
+  let match: RegExpExecArray | null;
+  while ((match = fencePattern.exec(text)) !== null) {
+    const content = match[1]?.trim();
+    if (content && content.length > 0) {
+      return content;
+    }
+  }
 
+  let braceDepth = 0;
+  let start = -1;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === "{") {
+      if (braceDepth === 0) start = i;
+      braceDepth++;
+    } else if (text[i] === "}") {
+      braceDepth--;
+      if (braceDepth === 0 && start >= 0) {
+        const candidate = text.slice(start, i + 1);
+        try {
+          const parsed = JSON.parse(candidate) as Record<string, unknown>;
+          if (parsed.elements || parsed.op || parsed.path) {
+            return candidate;
+          }
+        } catch {
+          // Not valid JSON, keep scanning.
+        }
+        start = -1;
+      }
+    }
+  }
+
+  return null;
+}
+
+function tryAllParseStrategies(text: string): SoneSpec | null {
   const compiler = createSpecStreamCompiler<SoneSpec>();
-  compiler.push(normalized.endsWith("\n") ? normalized : `${normalized}\n`);
+  compiler.push(text.endsWith("\n") ? text : `${text}\n`);
   const compilerResult = compiler.getResult();
   const compiled =
     prepareSpec(compilerResult) ?? prepareSpec(coerceLooseSpecObject(compilerResult));
-  if (compiled) {
-    return compiled;
-  }
+  if (compiled) return compiled;
 
-  const parsedObject = tryParseSpecObject(normalized);
+  const parsedObject = tryParseSpecObject(text);
   const parsed =
     prepareSpec(parsedObject) ?? prepareSpec(coerceLooseSpecObject(parsedObject));
-  if (parsed) {
-    return parsed;
-  }
+  if (parsed) return parsed;
 
-  const extractedJsonl = extractJsonlPatchLines(normalized);
+  const extractedJsonl = extractJsonlPatchLines(text);
   if (extractedJsonl) {
     const extractedCompiler = createSpecStreamCompiler<SoneSpec>();
     extractedCompiler.push(
@@ -905,9 +1299,22 @@ function parseOpenAiCompatSpec(text: string): SoneSpec {
     const extractedCompiled =
       prepareSpec(extractedCompilerResult) ??
       prepareSpec(coerceLooseSpecObject(extractedCompilerResult));
-    if (extractedCompiled) {
-      return extractedCompiled;
-    }
+    if (extractedCompiled) return extractedCompiled;
+  }
+
+  return null;
+}
+
+function parseOpenAiCompatSpec(text: string): SoneSpec {
+  const normalized = stripMarkdownFences(text);
+
+  const fromNormalized = tryAllParseStrategies(normalized);
+  if (fromNormalized) return fromNormalized;
+
+  const embedded = extractEmbeddedJson(text);
+  if (embedded) {
+    const fromEmbedded = tryAllParseStrategies(stripMarkdownFences(embedded));
+    if (fromEmbedded) return fromEmbedded;
   }
 
   throw new Error(
@@ -1206,12 +1613,14 @@ export async function createGenerationTextStream(
   }
 
   const config = resolveActiveConfig(runtime);
+  if (config.mode === "g4f") {
+    return createG4fPatchStream(request, config, runtime);
+  }
+
   const spec =
     config.mode === "sone-chat"
       ? await requestSoneChatSpec(request.prompt, config, runtime)
-      : config.mode === "g4f"
-        ? await requestG4fSpec(request, config, runtime)
-        : await requestOpenAiCompatSpec(request, config, runtime);
+      : await requestOpenAiCompatSpec(request, config, runtime);
 
   return createSpecJsonlStream(spec, { signal: runtime.signal });
 }
@@ -1225,22 +1634,52 @@ export async function streamSpec(
   const compiler = createSpecStreamCompiler<SoneSpec>();
   const stream = await createGenerationTextStream(payload, { ...options, signal });
   const reader = stream.getReader();
+  let rawText = "";
+
+  const prepareValidSpec = (value: unknown) => {
+    const prepared = prepareSpec(value);
+    if (!prepared) {
+      return null;
+    }
+    return validateSoneSpec(prepared).length === 0 ? prepared : null;
+  };
 
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      rawText += value;
 
       const { result, newPatches } = compiler.push(value);
       if (newPatches.length > 0) {
-        const prepared = prepareSpec(result);
-        callbacks.onSpec(prepared ?? result ?? null);
+        const prepared = prepareValidSpec(result);
+        if (prepared) {
+          callbacks.onSpec(prepared);
+        }
       }
     }
 
     const finalResult = compiler.getResult();
-    const preparedFinal = prepareSpec(finalResult);
-    callbacks.onSpec(preparedFinal ?? finalResult ?? null);
+    const preparedFinal = prepareValidSpec(finalResult);
+    if (preparedFinal) {
+      callbacks.onSpec(preparedFinal);
+      return;
+    }
+
+    if (rawText.trim()) {
+      const parsedFallback = prepareValidSpec(parseOpenAiCompatSpec(rawText));
+      if (parsedFallback) {
+        callbacks.onSpec(parsedFallback);
+        return;
+      }
+    }
+
+    const issues = validateSoneSpec(prepareSpec(finalResult) ?? finalResult ?? null);
+    throw new Error(
+      issues.length > 0
+        ? issues.map((issue) => `${issue.path}: ${issue.message}`).join("\n")
+        : "LLM stream did not produce a valid Sone spec.",
+    );
   } catch (error) {
     callbacks.onError?.(error instanceof Error ? error.message : String(error));
     throw error;

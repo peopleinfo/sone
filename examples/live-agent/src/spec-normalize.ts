@@ -1,3 +1,4 @@
+import { soneCatalog } from "@/catalog";
 import type { SoneSpec } from "@/types";
 
 /**
@@ -21,6 +22,21 @@ export function recoverMissingRoot(spec: SoneSpec | null): SoneSpec | null {
   const elementIds = Object.keys(spec.elements);
   if (elementIds.length === 1) {
     return { ...spec, root: elementIds[0] as string };
+  }
+
+  if (elementIds.length > 1) {
+    const referencedIds = new Set<string>();
+    for (const el of Object.values(spec.elements)) {
+      if (el && Array.isArray(el.children)) {
+        for (const child of el.children) {
+          if (typeof child === "string") referencedIds.add(child);
+        }
+      }
+    }
+    const topLevel = elementIds.filter((id) => !referencedIds.has(id));
+    if (topLevel.length === 1) {
+      return { ...spec, root: topLevel[0] as string };
+    }
   }
 
   return spec;
@@ -73,6 +89,63 @@ function normalizeTextStyleAliases(value: unknown): unknown {
   return normalized;
 }
 
+function coerceShadowValue(value: unknown): string | null {
+  if (typeof value === "string") return value;
+  if (!isRecord(value)) return null;
+
+  const x = typeof value.x === "number" ? value.x : typeof value.offsetX === "number" ? value.offsetX : 0;
+  const y = typeof value.y === "number" ? value.y : typeof value.offsetY === "number" ? value.offsetY : 4;
+  const blur = typeof value.blur === "number" ? value.blur : typeof value.blurRadius === "number" ? value.blurRadius : 8;
+  const spread = typeof value.spread === "number" ? value.spread : typeof value.spreadRadius === "number" ? value.spreadRadius : 0;
+  const color = typeof value.color === "string" ? value.color : "rgba(0,0,0,0.15)";
+
+  return spread !== 0
+    ? `${x}px ${y}px ${blur}px ${spread}px ${color}`
+    : `${x}px ${y}px ${blur}px ${color}`;
+}
+
+function normalizeShadowProp(value: unknown): string | string[] | undefined {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    const coerced = value.map(coerceShadowValue).filter((v): v is string => v !== null);
+    return coerced.length > 0 ? coerced : undefined;
+  }
+  if (isRecord(value)) {
+    const result = coerceShadowValue(value);
+    return result ?? undefined;
+  }
+  return undefined;
+}
+
+const STRUCTURAL_PROPS = new Set([
+  "rows", "items", "segments", "columns", "d", "src", "clipPath",
+  "autoRows", "autoColumns", "spacing", "cells", "text", "mode",
+]);
+
+function stripInvalidProps(
+  type: SoneSpec["elements"][string]["type"],
+  props: Record<string, unknown>,
+): Record<string, unknown> {
+  const componentDef = soneCatalog.data.components[type];
+  if (!componentDef) return props;
+
+  const result = componentDef.props.safeParse(props);
+  if (result.success) return props;
+
+  const invalidPaths = new Set(
+    result.error.issues.map((issue) => String(issue.path[0] ?? "")),
+  );
+
+  const cleaned: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(props)) {
+    if (!invalidPaths.has(key) || STRUCTURAL_PROPS.has(key)) {
+      cleaned[key] = value;
+    }
+  }
+
+  return cleaned;
+}
+
 function normalizeElementProps(
   type: SoneSpec["elements"][string]["type"],
   props: SoneSpec["elements"][string]["props"],
@@ -81,6 +154,16 @@ function normalizeElementProps(
 
   if (type === "Text" || type === "TextDefault") {
     normalized = normalizeTextStyleAliases(normalized) as Record<string, unknown>;
+  }
+
+  if (normalized.boxShadow !== undefined) {
+    normalized.boxShadow = normalizeShadowProp(normalized.boxShadow);
+    if (normalized.boxShadow === undefined) delete normalized.boxShadow;
+  }
+  if (normalized.shadows !== undefined && !Array.isArray(normalized.shadows)) {
+    const coerced = normalizeShadowProp(normalized.shadows);
+    normalized.shadows = Array.isArray(coerced) ? coerced : coerced ? [coerced] : undefined;
+    if (normalized.shadows === undefined) delete normalized.shadows;
   }
 
   if (Array.isArray(normalized.segments)) {
@@ -130,6 +213,8 @@ function normalizeElementProps(
       };
     });
   }
+
+  normalized = stripInvalidProps(type, normalized);
 
   return normalized as SoneSpec["elements"][string]["props"];
 }
@@ -244,9 +329,20 @@ export function normalizeSpecStructure(spec: SoneSpec | null): SoneSpec | null {
     if (normalizedElements[id]) {
       return id;
     }
-    const candidates = canonicalIdMap.get(canonicalizeElementId(id));
+    const canonical = canonicalizeElementId(id);
+    const candidates = canonicalIdMap.get(canonical);
     if (candidates?.length === 1) {
       return candidates[0] as string;
+    }
+    const prefixCandidates = elementIds.filter((elementId) => {
+      const canonicalElementId = canonicalizeElementId(elementId);
+      return (
+        canonicalElementId.startsWith(canonical) ||
+        canonical.startsWith(canonicalElementId)
+      );
+    });
+    if (prefixCandidates.length === 1) {
+      return prefixCandidates[0] as string;
     }
     return id;
   }
@@ -255,7 +351,25 @@ export function normalizeSpecStructure(spec: SoneSpec | null): SoneSpec | null {
     element.children = element.children.map(resolveElementId).filter((child) => child.length > 0);
   }
 
-  const resolvedRoot = resolveElementId(spec.root);
+  let resolvedRoot = resolveElementId(spec.root);
+
+  if (!resolvedRoot || !normalizedElements[resolvedRoot]) {
+    if (normalizedElements.root) {
+      resolvedRoot = "root";
+    } else {
+      const allIds = Object.keys(normalizedElements);
+      const referencedIds = new Set<string>();
+      for (const el of Object.values(normalizedElements)) {
+        for (const child of el.children) {
+          referencedIds.add(child);
+        }
+      }
+      const topLevel = allIds.filter((id) => !referencedIds.has(id));
+      resolvedRoot = topLevel.length === 1
+        ? (topLevel[0] as string)
+        : allIds[0] ?? "";
+    }
+  }
 
   const normalizedSpec: SoneSpec = {
     root: resolvedRoot,
