@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ChatResponseError,
   clearStoredLlmConfig,
   DEFAULT_CHAT_ENDPOINT,
   DEFAULT_G4F_CHAT_ENDPOINT,
@@ -208,6 +209,7 @@ export default function App() {
   });
   const [renderError, setRenderError] = useState<string | null>(null);
   const [streamError, setStreamError] = useState<string | null>(null);
+  const [chatResponse, setChatResponse] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
@@ -313,6 +315,7 @@ export default function App() {
       controllerRef.current = controller;
       setIsStreaming(true);
       setStreamError(null);
+      setChatResponse(null);
 
       try {
         let apiAttachments: ChatAttachment[] | undefined;
@@ -331,7 +334,11 @@ export default function App() {
         );
       } catch (error) {
         if (controller.signal.aborted) return;
-        setStreamError(error instanceof Error ? error.message : String(error));
+        if (error instanceof ChatResponseError) {
+          setChatResponse(error.chatResponse);
+        } else {
+          setStreamError(error instanceof Error ? error.message : String(error));
+        }
       } finally {
         if (controllerRef.current === controller) {
           controllerRef.current = null;
@@ -369,6 +376,7 @@ export default function App() {
     setCanvas(null);
     setRenderError(null);
     setStreamError(null);
+    setChatResponse(null);
     setIsStreaming(false);
     setAttachments((prev) => {
       revokePendingAttachments(prev);
@@ -619,6 +627,15 @@ export default function App() {
             )}
             {isStreaming ? (
               <div className="status info">Streaming patches...</div>
+            ) : null}
+            {chatResponse ? (
+              <div className="chat-response">
+                <div className="chat-response-header">
+                  <strong>Chat Response</strong>
+                  <span className="meta">No Sone spec detected</span>
+                </div>
+                <pre className="chat-response-body">{chatResponse}</pre>
+              </div>
             ) : null}
             {streamError ? <div className="status error">{streamError}</div> : null}
             {renderError ? <div className="status error">{renderError}</div> : null}

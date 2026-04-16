@@ -10,6 +10,15 @@ import { prepareSpec } from "@/spec-normalize";
 import { validateSoneSpec } from "@/spec-to-sone";
 import type { SoneElement, SoneSpec } from "@/types";
 
+export class ChatResponseError extends Error {
+  readonly chatResponse: string;
+  constructor(chatResponse: string) {
+    super(chatResponse);
+    this.name = "ChatResponseError";
+    this.chatResponse = chatResponse;
+  }
+}
+
 export const DEFAULT_CHAT_ENDPOINT = "http://localhost:8080/api/agent/chat";
 export const DEFAULT_G4F_API_BASE = "https://g4f.space/backend-api/v2";
 /** g4f conversation endpoint (fetch-based SSE). */
@@ -344,6 +353,17 @@ function createOpenAiCompatSystemPrompt() {
   return soneCatalog.prompt({
     customRules: [...OPENAI_COMPAT_CUSTOM_RULES],
   });
+}
+
+function buildSoneChatMessage(message: string): string {
+  const catalogPrompt = createOpenAiCompatSystemPrompt();
+  return [
+    "You must follow this Catalog Prompt exactly:",
+    catalogPrompt,
+    "",
+    "User request:",
+    message,
+  ].join("\n");
 }
 
 type TextContentPart = { type: "text"; text: string };
@@ -1164,22 +1184,72 @@ export function isG4fDefaultEndpoint(url: string) {
   );
 }
 
-async function requestSoneChatSpec(
-  prompt: string,
+function tryParseSoneChatText(text: string): SoneSpec | null {
+  try {
+    return parseOpenAiCompatSpec(text);
+  } catch {
+    return null;
+  }
+}
+
+function extractSoneChatSpec(data: unknown): SoneSpec | null {
+  if (!data || typeof data !== "object") return null;
+  const obj = data as Record<string, unknown>;
+
+  const fromSpec = prepareSpec(obj.spec);
+  if (fromSpec) return fromSpec;
+
+  const fromData = prepareSpec(obj.data);
+  if (fromData) return fromData;
+
+  const fromResult = prepareSpec(obj.result);
+  if (fromResult) return fromResult;
+
+  const fromRoot = prepareSpec(data);
+  if (fromRoot) return fromRoot;
+
+  for (const value of Object.values(obj)) {
+    if (value && typeof value === "object") {
+      const nested = prepareSpec(value);
+      if (nested) return nested;
+    }
+  }
+
+  const textFields = [obj.response, obj.message, obj.content, obj.text, obj.output];
+  for (const field of textFields) {
+    if (typeof field === "string" && field.trim()) {
+      const parsed = tryParseSoneChatText(field);
+      if (parsed) return parsed;
+    }
+  }
+
+  return null;
+}
+
+function extractSoneChatResponseText(data: unknown): string {
+  if (!data || typeof data !== "object") return "";
+  const obj = data as Record<string, unknown>;
+
+  const inner =
+    obj.data && typeof obj.data === "object"
+      ? (obj.data as Record<string, unknown>)
+      : obj;
+
+  for (const key of ["response", "message", "content", "text", "output"]) {
+    const val = inner[key];
+    if (typeof val === "string" && val.trim()) return val;
+  }
+
+  return "";
+}
+
+async function sendSoneChatRequest(
+  message: string,
   config: StoredLlmConfig,
   runtime: RuntimeOptions,
-  attachments?: ChatAttachment[],
-): Promise<SoneSpec> {
-  const body: Record<string, unknown> = { message: prompt };
-  if (attachments && attachments.length > 0) {
-    body.attachments = attachments.map((a) => ({
-      name: a.name,
-      kind: a.kind,
-      mimeType: a.mimeType,
-      dataUrl: a.dataUrl,
-      ...(a.textContent ? { textContent: a.textContent } : {}),
-    }));
-  }
+): Promise<{ raw: string; data: unknown }> {
+  const body: Record<string, unknown> = { message };
+
   const response = await ensureFetch(runtime.fetch)(config.url, {
     method: "POST",
     headers: buildHeaders(config),
@@ -1191,12 +1261,77 @@ async function requestSoneChatSpec(
     throw new Error(await readJsonError(response));
   }
 
-  const data = (await response.json()) as { spec?: SoneSpec };
-  if (!data?.spec || typeof data.spec !== "object") {
-    throw new Error("Chat endpoint did not return a valid `spec` payload.");
+  const raw = await response.text();
+  let data: unknown;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    data = null;
+  }
+  return { raw, data };
+}
+
+function parseSoneChatResponse(raw: string, data: unknown): SoneSpec | null {
+  if (data) {
+    const specFromJson = extractSoneChatSpec(data);
+    if (specFromJson) return specFromJson;
+
+    const assistantText = extractSoneChatResponseText(data);
+    if (assistantText) {
+      const specFromText = tryParseSoneChatText(assistantText);
+      if (specFromText) return specFromText;
+    }
   }
 
-  return data.spec;
+  return tryParseSoneChatText(raw);
+}
+
+async function requestSoneChatSpec(
+  payload: GeneratePayload,
+  config: StoredLlmConfig,
+  runtime: RuntimeOptions,
+): Promise<SoneSpec> {
+  const userPrompt = buildPatchOnlyUserPrompt(payload);
+
+  let message = buildSoneChatMessage(userPrompt);
+
+  for (let attempt = 0; attempt <= MAX_AUTO_REPAIR_ATTEMPTS; attempt++) {
+    const { raw, data } = await sendSoneChatRequest(message, config, runtime);
+
+    const responseText =
+      (data ? extractSoneChatResponseText(data) : "") || raw;
+
+    const spec = parseSoneChatResponse(raw, data);
+    if (spec) {
+      const issues = validateSoneSpec(spec);
+      if (issues.length === 0) return spec;
+
+      if (attempt >= MAX_AUTO_REPAIR_ATTEMPTS) {
+        throw new ChatResponseError(responseText);
+      }
+
+      message = buildRepairPrompt(
+        payload,
+        issues.map((issue) => `${issue.path}: ${issue.message}`).join("\n"),
+        attempt + 1,
+      );
+      message = buildSoneChatMessage(message);
+      continue;
+    }
+
+    if (attempt >= MAX_AUTO_REPAIR_ATTEMPTS || responseText.length > 0) {
+      throw new ChatResponseError(responseText || raw);
+    }
+
+    message = buildRepairPrompt(
+      payload,
+      "Response did not contain recognizable JSONL patches or a Sone spec object.",
+      attempt + 1,
+    );
+    message = buildSoneChatMessage(message);
+  }
+
+  throw new Error("Chat endpoint did not produce a valid spec.");
 }
 
 function extractAssistantText(data: OpenAiCompatResponse) {
@@ -1786,7 +1921,7 @@ export async function createGenerationTextStream(
 
   const spec =
     config.mode === "sone-chat"
-      ? await requestSoneChatSpec(request.prompt, config, runtime, request.attachments)
+      ? await requestSoneChatSpec(request, config, runtime)
       : await requestOpenAiCompatSpec(request, config, runtime);
 
   return createSpecJsonlStream(spec, { signal: runtime.signal });

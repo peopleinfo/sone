@@ -13,16 +13,8 @@ export interface RenderDebugOptions {
 const measureCanvas = document.createElement("canvas");
 const registeredFonts = new Set<string>();
 
-const sharedMethods: Omit<SoneRenderer, "dpr"> = {
+const sharedMethods: Omit<SoneRenderer, "dpr" | "createCanvas"> = {
   breakIterator: defaultLineBreakerIterator,
-
-  createCanvas(width: number, height: number): HTMLCanvasElement {
-    const canvas = document.createElement("canvas");
-    canvas.width = width * window.devicePixelRatio;
-    canvas.height = height * window.devicePixelRatio;
-    canvas.getContext("2d")?.scale(window.devicePixelRatio, window.devicePixelRatio);
-    return canvas;
-  },
 
   measureText(text: string, props: Parameters<SoneRenderer["measureText"]>[1]) {
     const ctx = measureCanvas.getContext("2d")!;
@@ -96,7 +88,18 @@ export function createRenderer(
   dpr: number,
   debug: RenderDebugOptions = { layout: false, text: false },
 ): SoneRenderer {
-  return { ...sharedMethods, dpr: () => dpr, debug: () => debug };
+  return {
+    ...sharedMethods,
+    dpr: () => dpr,
+    debug: () => debug,
+    createCanvas(width: number, height: number): HTMLCanvasElement {
+      const canvas = document.createElement("canvas");
+      canvas.width = width * dpr;
+      canvas.height = height * dpr;
+      canvas.getContext("2d")?.scale(dpr, dpr);
+      return canvas;
+    },
+  };
 }
 
 export const browserRenderer: SoneRenderer = createRenderer(window.devicePixelRatio);

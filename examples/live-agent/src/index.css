@@ -192,6 +192,39 @@ pre {
   color: #146c43;
 }
 
+.chat-response {
+  background: #f0f4ff;
+  border: 1px solid #c7d2fe;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.chat-response-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0.75rem;
+  background: #e0e7ff;
+  font-size: 0.82rem;
+}
+
+.chat-response-header .meta {
+  color: #6366f1;
+  font-size: 0.75rem;
+}
+
+.chat-response-body {
+  margin: 0;
+  padding: 0.75rem;
+  font-size: 0.85rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 300px;
+  overflow-y: auto;
+  color: #1e293b;
+}
+
 .status-action {
   margin-left: 0.75rem;
 }
