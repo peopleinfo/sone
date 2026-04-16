@@ -18,7 +18,9 @@ export function Preview({ canvas, isRunning }: PreviewProps) {
       <header className="panel-header">
         <div>
           <strong>Preview</strong>
-          {canvas ? (
+          {isRunning ? (
+            <span className="meta streaming-badge">Streaming...</span>
+          ) : canvas ? (
             <span className="meta">
               {Math.round(canvas.width / browserRenderer.dpr())} x {Math.round(canvas.height / browserRenderer.dpr())} px
             </span>
@@ -38,7 +40,6 @@ export function Preview({ canvas, isRunning }: PreviewProps) {
       </header>
 
       <div className="preview-canvas-shell">
-        {isRunning ? <div className="preview-overlay">Rendering...</div> : null}
         {canvas ? (
           <div className="preview-center">
             <CanvasDisplay canvas={canvas} zoom={zoom} />

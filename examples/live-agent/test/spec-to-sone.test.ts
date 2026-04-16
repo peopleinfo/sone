@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { specToSoneNode, validateSoneSpec } from "@/spec-to-sone";
+import { specToSoneNode, specToSoneNodeLenient, validateSoneSpec } from "@/spec-to-sone";
 import type { SoneSpec } from "@/types";
 
 describe("specToSoneNode", () => {
@@ -346,5 +346,74 @@ describe("specToSoneNode", () => {
     expect(validateSoneSpec(spec)).toEqual([]);
     const node = specToSoneNode(spec) as { type: string };
     expect(node.type).toBe("column");
+  });
+});
+
+describe("specToSoneNodeLenient", () => {
+  it("renders a complete spec the same as the strict builder", () => {
+    const spec: SoneSpec = {
+      root: "root",
+      elements: {
+        root: {
+          type: "Column",
+          props: { padding: 16 },
+          children: ["title"],
+        },
+        title: {
+          type: "Text",
+          props: { text: "Hello" },
+          children: [],
+        },
+      },
+    };
+
+    const node = specToSoneNodeLenient(spec) as { type: string };
+    expect(node).not.toBeNull();
+    expect(node.type).toBe("column");
+  });
+
+  it("skips missing children instead of throwing", () => {
+    const spec: SoneSpec = {
+      root: "root",
+      elements: {
+        root: {
+          type: "Column",
+          props: { padding: 16 },
+          children: ["title", "missing-child"],
+        },
+        title: {
+          type: "Text",
+          props: { text: "Hello" },
+          children: [],
+        },
+      },
+    };
+
+    expect(() => specToSoneNode(spec)).toThrow();
+    const node = specToSoneNodeLenient(spec) as { type: string; children: unknown[] };
+    expect(node).not.toBeNull();
+    expect(node.type).toBe("column");
+  });
+
+  it("recovers and builds when root references a missing element but others exist", () => {
+    const spec: SoneSpec = {
+      root: "missing",
+      elements: {
+        title: {
+          type: "Text",
+          props: { text: "Hello" },
+          children: [],
+        },
+      },
+    };
+
+    const node = specToSoneNodeLenient(spec) as { type: string } | null;
+    expect(node).not.toBeNull();
+    expect(node!.type).toBe("text");
+  });
+
+  it("returns null for empty spec", () => {
+    const node = specToSoneNodeLenient({ root: "", elements: {} });
+    expect(node).toBeNull();
   });
 });

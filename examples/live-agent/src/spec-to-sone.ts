@@ -82,6 +82,21 @@ export function validateSoneSpec(
   }
 
   const data = catalogResult.data as SoneSpec;
+
+  if (prepared && prepared.root && prepared.elements[prepared.root] && !data.elements[data.root]) {
+    data.root = prepared.root;
+  }
+
+  if (!data.elements[data.root] && Object.keys(data.elements).length > 0) {
+    const referencedIds = new Set<string>();
+    for (const el of Object.values(data.elements)) {
+      for (const child of el.children ?? []) referencedIds.add(child);
+    }
+    const allIds = Object.keys(data.elements);
+    const topLevel = allIds.filter((id) => !referencedIds.has(id));
+    data.root = topLevel.length === 1 ? topLevel[0]! : allIds[0]!;
+  }
+
   const maxElements = options.maxElements ?? DEFAULT_MAX_ELEMENTS;
   const maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
   const maxDimension = options.maxDimension ?? DEFAULT_MAX_DIMENSION;
@@ -142,6 +157,12 @@ export function specToSoneNode(
   options: SoneBuildOptions = {},
 ): SoneNode {
   return buildSoneNode(spec, options).node;
+}
+
+export function specToSoneNodeLenient(spec: unknown): SoneNode {
+  const data = prepareSpec(spec);
+  if (!data?.root || !data.elements[data.root]) return null;
+  return buildElementLenient(data.root, data, 0);
 }
 
 function validateElementShape(
@@ -305,6 +326,55 @@ function buildElement(
         ClipGroup((element.props as ClipGroupProps).clipPath, ...children),
         omitKeys(element.props as ClipGroupProps, ["clipPath"]),
       );
+  }
+}
+
+function buildElementLenient(
+  id: string,
+  spec: SoneSpec,
+  depth: number,
+): SoneNode {
+  const element = spec.elements[id];
+  if (!element) return null;
+  if (depth > DEFAULT_MAX_DEPTH) return null;
+
+  const children = (element.children ?? [])
+    .filter((childId) => spec.elements[childId])
+    .map((childId) => buildElementLenient(childId, spec, depth + 1))
+    .filter((node): node is NonNullable<SoneNode> => node != null);
+
+  try {
+    switch (element.type) {
+      case "Column":
+        return applyBaseProps(Column(...children), element.props as BaseStyleProps);
+      case "Row":
+        return applyBaseProps(Row(...children), element.props as BaseStyleProps);
+      case "Grid":
+        return applyGridProps(Grid(...children), element.props as GridProps);
+      case "Text":
+        return applyTextProps(buildText(element.props as TextProps), element.props as TextProps);
+      case "TextDefault":
+        return applyTextDefaultProps(TextDefault(...children), element.props as TextDefaultProps);
+      case "PageBreak":
+        return applyPageBreakProps(element.props as PageBreakProps);
+      case "Photo":
+        return applyPhotoProps(element.props as PhotoProps);
+      case "Path":
+        return applyPathProps(element.props as PathProps);
+      case "Table":
+        return applyTableProps(element.props as TableProps);
+      case "List":
+        return applyListProps(element.props as ListProps);
+      case "ClipGroup":
+        return applyBaseProps(
+          ClipGroup((element.props as ClipGroupProps).clipPath, ...children),
+          omitKeys(element.props as ClipGroupProps, ["clipPath"]),
+        );
+      default:
+        return null;
+    }
+  } catch {
+    return children.length > 0 ? applyBaseProps(Column(...children), {}) : null;
   }
 }
 

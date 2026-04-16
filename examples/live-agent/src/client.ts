@@ -55,6 +55,7 @@ export interface GeneratePayload {
 
 export interface StreamCallbacks {
   onSpec: (spec: SoneSpec | null) => void;
+  onPartialSpec?: (spec: SoneSpec | null) => void;
   onError?: (message: string) => void;
 }
 
@@ -1250,6 +1251,7 @@ function extractEmbeddedJson(text: string): string | null {
     }
   }
 
+  let bestCandidate: string | null = null;
   let braceDepth = 0;
   let start = -1;
   for (let i = 0; i < text.length; i++) {
@@ -1262,8 +1264,11 @@ function extractEmbeddedJson(text: string): string | null {
         const candidate = text.slice(start, i + 1);
         try {
           const parsed = JSON.parse(candidate) as Record<string, unknown>;
-          if (parsed.elements || parsed.op || parsed.path) {
+          if (parsed.elements) {
             return candidate;
+          }
+          if ((parsed.op || parsed.path) && !bestCandidate) {
+            bestCandidate = candidate;
           }
         } catch {
           // Not valid JSON, keep scanning.
@@ -1273,7 +1278,7 @@ function extractEmbeddedJson(text: string): string | null {
     }
   }
 
-  return null;
+  return bestCandidate;
 }
 
 function tryAllParseStrategies(text: string): SoneSpec | null {
@@ -1305,6 +1310,31 @@ function tryAllParseStrategies(text: string): SoneSpec | null {
   return null;
 }
 
+function extractAllBraceBalancedJsonl(text: string): string | null {
+  const objects: string[] = [];
+  let braceDepth = 0;
+  let start = -1;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === "{") {
+      if (braceDepth === 0) start = i;
+      braceDepth++;
+    } else if (text[i] === "}") {
+      braceDepth--;
+      if (braceDepth === 0 && start >= 0) {
+        const candidate = text.slice(start, i + 1);
+        try {
+          JSON.parse(candidate);
+          objects.push(candidate);
+        } catch {
+          // skip malformed
+        }
+        start = -1;
+      }
+    }
+  }
+  return objects.length > 0 ? objects.join("\n") : null;
+}
+
 function parseOpenAiCompatSpec(text: string): SoneSpec {
   const normalized = stripMarkdownFences(text);
 
@@ -1315,6 +1345,18 @@ function parseOpenAiCompatSpec(text: string): SoneSpec {
   if (embedded) {
     const fromEmbedded = tryAllParseStrategies(stripMarkdownFences(embedded));
     if (fromEmbedded) return fromEmbedded;
+  }
+
+  const embeddedFromNormalized = extractEmbeddedJson(normalized);
+  if (embeddedFromNormalized && embeddedFromNormalized !== embedded) {
+    const fromEmbedded = tryAllParseStrategies(stripMarkdownFences(embeddedFromNormalized));
+    if (fromEmbedded) return fromEmbedded;
+  }
+
+  const allJsonl = extractAllBraceBalancedJsonl(text);
+  if (allJsonl) {
+    const fromAll = tryAllParseStrategies(allJsonl);
+    if (fromAll) return fromAll;
   }
 
   throw new Error(
@@ -1652,6 +1694,11 @@ export async function streamSpec(
 
       const { result, newPatches } = compiler.push(value);
       if (newPatches.length > 0) {
+        const partial = prepareSpec(result);
+        if (partial && partial.root && partial.elements[partial.root]) {
+          callbacks.onPartialSpec?.(partial);
+        }
+
         const prepared = prepareValidSpec(result);
         if (prepared) {
           callbacks.onSpec(prepared);
@@ -1663,18 +1710,31 @@ export async function streamSpec(
     const preparedFinal = prepareValidSpec(finalResult);
     if (preparedFinal) {
       callbacks.onSpec(preparedFinal);
+      callbacks.onPartialSpec?.(null);
       return;
     }
 
     if (rawText.trim()) {
-      const parsedFallback = prepareValidSpec(parseOpenAiCompatSpec(rawText));
-      if (parsedFallback) {
-        callbacks.onSpec(parsedFallback);
-        return;
+      try {
+        const parsedFallback = prepareValidSpec(parseOpenAiCompatSpec(rawText));
+        if (parsedFallback) {
+          callbacks.onSpec(parsedFallback);
+          callbacks.onPartialSpec?.(null);
+          return;
+        }
+      } catch {
+        // parseOpenAiCompatSpec threw — fall through to validation error below.
       }
     }
 
-    const issues = validateSoneSpec(prepareSpec(finalResult) ?? finalResult ?? null);
+    const fallbackSpec = prepareSpec(finalResult) ?? finalResult ?? null;
+    const issues = validateSoneSpec(fallbackSpec);
+    if (issues.length === 0 && fallbackSpec) {
+      callbacks.onSpec(fallbackSpec as SoneSpec);
+      callbacks.onPartialSpec?.(null);
+      return;
+    }
+
     throw new Error(
       issues.length > 0
         ? issues.map((issue) => `${issue.path}: ${issue.message}`).join("\n")

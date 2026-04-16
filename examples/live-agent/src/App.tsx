@@ -19,7 +19,7 @@ import { Preview } from "@/components/Preview";
 import { exportAsJPEG, exportAsPNG } from "@/export";
 import { browserRenderer } from "@/renderer";
 import { soneCatalog } from "@/catalog";
-import { specToSoneNode } from "@/spec-to-sone";
+import { specToSoneNode, specToSoneNodeLenient } from "@/spec-to-sone";
 import type { SoneSpec } from "@/types";
 
 const DEFAULT_PROMPT =
@@ -56,6 +56,7 @@ export default function App() {
   const [isCatalogPromptVisible, setIsCatalogPromptVisible] = useState(false);
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
   const [spec, setSpec] = useState<SoneSpec | null>(null);
+  const [previewSpec, setPreviewSpec] = useState<SoneSpec | null>(null);
   const [canvas, setCanvas] = useState<HTMLCanvasElement | null>(null);
   const [isStreaming, setIsStreaming] = useState(false);
   const [isSetupDialogOpen, setIsSetupDialogOpen] = useState(false);
@@ -100,6 +101,7 @@ export default function App() {
           { prompt, previousSpec: spec },
           {
             onSpec: (next) => setSpec(next),
+            onPartialSpec: (next) => setPreviewSpec(next),
           },
           controller.signal,
           storedConfig ? { config: storedConfig } : {},
@@ -111,6 +113,7 @@ export default function App() {
         if (controllerRef.current === controller) {
           controllerRef.current = null;
           setIsStreaming(false);
+          setPreviewSpec(null);
         }
       }
     }, [prompt, spec, storedConfig]);
@@ -129,6 +132,7 @@ export default function App() {
     controllerRef.current?.abort();
     controllerRef.current = null;
     setSpec(null);
+    setPreviewSpec(null);
     setCanvas(null);
     setLastNode(null);
     setRenderError(null);
@@ -212,8 +216,10 @@ export default function App() {
     [canvas],
   );
 
+  const activeSpec = previewSpec ?? spec;
+
   useEffect(() => {
-    if (!spec) {
+    if (!activeSpec) {
       setCanvas(null);
       setLastNode(null);
       setRenderError(null);
@@ -221,10 +227,22 @@ export default function App() {
     }
 
     let cancelled = false;
+    let rafId: number | null = null;
 
-    async function renderSpec() {
+    function scheduleRender() {
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        if (cancelled) return;
+        void doRender();
+      });
+    }
+
+    async function doRender() {
       try {
-        const node = specToSoneNode(spec);
+        const node = previewSpec
+          ? specToSoneNodeLenient(activeSpec)
+          : specToSoneNode(activeSpec);
+        if (!node) return;
         const nextCanvas = await render<HTMLCanvasElement>(node, browserRenderer);
         if (!cancelled) {
           setLastNode(node);
@@ -238,12 +256,13 @@ export default function App() {
       }
     }
 
-    void renderSpec();
+    scheduleRender();
 
     return () => {
       cancelled = true;
+      if (rafId !== null) cancelAnimationFrame(rafId);
     };
-  }, [spec]);
+  }, [activeSpec, previewSpec]);
 
   return (
     <div className="app-shell">

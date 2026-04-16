@@ -10,9 +10,11 @@ import {
   getDefaultLlmConfig,
   persistStoredLlmConfig,
   readStoredLlmConfig,
+  streamSpec,
   testLlmConnection,
   type StoredLlmConfig,
 } from "@/client";
+import type { SoneSpec } from "@/types";
 
 async function streamToText(stream: ReadableStream<string>) {
   const reader = stream.getReader();
@@ -590,5 +592,34 @@ describe("createGenerationTextStream", () => {
     expect(calls[0]?.url).toBe("http://localhost:11434/v1/chat/completions");
     expect(calls[0]?.body).toContain(DEFAULT_OPENAI_TEST_MESSAGE);
     expect(calls[0]?.headers.Authorization).toBeUndefined();
+  });
+});
+
+describe("streamSpec onPartialSpec", () => {
+  it("emits partial specs during streaming before final onSpec", async () => {
+    const partials: Array<SoneSpec | null> = [];
+    const finals: Array<SoneSpec | null> = [];
+
+    await streamSpec(
+      { prompt: "fixture please", fixture: true },
+      {
+        onSpec: (s) => finals.push(s),
+        onPartialSpec: (s) => partials.push(s),
+      },
+    );
+
+    expect(finals.length).toBeGreaterThanOrEqual(1);
+    const lastFinal = finals[finals.length - 1];
+    expect(lastFinal).not.toBeNull();
+    expect(lastFinal!.root).toBeTruthy();
+    expect(Object.keys(lastFinal!.elements).length).toBeGreaterThan(0);
+
+    if (partials.length > 0) {
+      const nonNullPartials = partials.filter((p) => p !== null);
+      for (const p of nonNullPartials) {
+        expect(p!.root).toBeTruthy();
+        expect(p!.elements[p!.root]).toBeDefined();
+      }
+    }
   });
 });

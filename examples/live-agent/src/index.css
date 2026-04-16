@@ -252,9 +252,14 @@ pre {
   color: #5b6570;
 }
 
-.preview-overlay {
-  background: rgba(255, 255, 255, 0.7);
-  z-index: 1;
+.streaming-badge {
+  animation: pulse-opacity 1.2s ease-in-out infinite;
+  color: #3b82f6;
+}
+
+@keyframes pulse-opacity {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
 
 .canvas-mount {
