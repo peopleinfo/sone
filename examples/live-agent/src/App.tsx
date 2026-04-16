@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   clearStoredLlmConfig,
   DEFAULT_CHAT_ENDPOINT,
@@ -11,6 +11,7 @@ import {
   streamSpec,
   TEST_CONNECTION_MESSAGE,
   testLlmConnection,
+  type ChatAttachment,
   type LlmBackendMode,
   type StoredLlmConfig,
 } from "@/client";
@@ -18,6 +19,144 @@ import { Preview } from "@/components/Preview";
 import { exportAsJPEG, exportAsPNG } from "@/export";
 import { soneCatalog } from "@/catalog";
 import type { SoneSpec } from "@/types";
+
+const IMAGE_MIME = new Set([
+  "image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp",
+]);
+const DOC_MIME = new Set([
+  "text/plain", "text/csv", "text/markdown", "text/x-markdown", "application/json",
+]);
+const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp"]);
+const DOC_EXTENSIONS = new Set(["txt", "csv", "md", "json"]);
+
+const ALL_ACCEPTED = [
+  ...IMAGE_MIME, ...DOC_MIME,
+  ...Array.from(IMAGE_EXTENSIONS, (e) => `.${e}`),
+  ...Array.from(DOC_EXTENSIONS, (e) => `.${e}`),
+].join(",");
+
+const MAX_FILE_SIZE_MB = 10;
+const MAX_ATTACHMENTS = 10;
+const MAX_TOTAL_BYTES = 50 * 1024 * 1024;
+const MAX_IMAGE_DIMENSION = 2048;
+const IMAGE_QUALITY = 0.85;
+
+function fileExtension(name: string): string {
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 ? name.slice(dot + 1).toLowerCase() : "";
+}
+
+function isImageFile(file: File): boolean {
+  if (IMAGE_MIME.has(file.type)) return true;
+  return IMAGE_EXTENSIONS.has(fileExtension(file.name));
+}
+
+function isDocFile(file: File): boolean {
+  if (DOC_MIME.has(file.type)) return true;
+  return DOC_EXTENSIONS.has(fileExtension(file.name));
+}
+
+function isSupportedFile(file: File): boolean {
+  return isImageFile(file) || isDocFile(file);
+}
+
+interface PendingAttachment {
+  file: File;
+  name: string;
+  kind: "image" | "document";
+  objectUrl: string;
+}
+
+function createPendingAttachment(file: File): PendingAttachment {
+  return {
+    file,
+    name: file.name,
+    kind: isImageFile(file) ? "image" : "document",
+    objectUrl: URL.createObjectURL(file),
+  };
+}
+
+function revokePendingAttachments(items: PendingAttachment[]) {
+  for (const item of items) {
+    URL.revokeObjectURL(item.objectUrl);
+  }
+}
+
+function readFileAsText(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+    reader.readAsText(file);
+  });
+}
+
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("Failed to load image for resizing"));
+    img.src = src;
+  });
+}
+
+async function resizeImageToDataUrl(file: File, objectUrl: string): Promise<string> {
+  const img = await loadImage(objectUrl);
+  const { naturalWidth: w, naturalHeight: h } = img;
+
+  if (w <= MAX_IMAGE_DIMENSION && h <= MAX_IMAGE_DIMENSION) {
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  const scale = MAX_IMAGE_DIMENSION / Math.max(w, h);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(w * scale);
+  canvas.height = Math.round(h * scale);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas 2D context unavailable");
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+  const isPng = file.type === "image/png" || fileExtension(file.name) === "png";
+  const outputType = isPng ? "image/png" : "image/jpeg";
+  const dataUrl = canvas.toDataURL(outputType, IMAGE_QUALITY);
+
+  canvas.width = 0;
+  canvas.height = 0;
+  return dataUrl;
+}
+
+const EXT_TO_MIME: Record<string, string> = {
+  jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
+  gif: "image/gif", webp: "image/webp",
+  txt: "text/plain", csv: "text/csv", md: "text/markdown", json: "application/json",
+};
+
+function resolveMime(file: File): string {
+  if (file.type && file.type !== "application/octet-stream") return file.type;
+  return EXT_TO_MIME[fileExtension(file.name)] ?? "application/octet-stream";
+}
+
+async function pendingToApiAttachment(att: PendingAttachment): Promise<ChatAttachment> {
+  const mimeType = resolveMime(att.file);
+  if (att.kind === "image") {
+    const dataUrl = await resizeImageToDataUrl(att.file, att.objectUrl);
+    return { name: att.name, kind: "image", mimeType, dataUrl };
+  }
+
+  const textContent = await readFileAsText(att.file);
+  return {
+    name: att.name,
+    kind: "document",
+    mimeType,
+    dataUrl: "",
+    textContent,
+  };
+}
 
 const DEFAULT_PROMPT =
   "Design a fancy primary button component with a subtle gradient background, rounded corners, bold label text, and a small supporting caption below it.";
@@ -34,6 +173,10 @@ function modeLabel(mode: LlmBackendMode) {
   if (mode === "sone-chat") return "Local Sone backend";
   if (mode === "g4f") return "g4f";
   return "OpenAI-compatible";
+}
+
+function modeSupportsAttachments(mode: LlmBackendMode | undefined): boolean {
+  return mode === "g4f" || mode === "openai-compatible";
 }
 
 function formatEndpointDisplay(url: string, maxLength = 52) {
@@ -65,7 +208,18 @@ export default function App() {
   });
   const [renderError, setRenderError] = useState<string | null>(null);
   const [streamError, setStreamError] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
+
+  const attachmentsEnabled = modeSupportsAttachments(storedConfig?.mode);
+
+  useEffect(() => {
+    if (!attachmentsEnabled && attachments.length > 0) {
+      revokePendingAttachments(attachments);
+      setAttachments([]);
+    }
+  }, [attachmentsEnabled]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const prettySpec = useMemo(() => (spec ? JSON.stringify(spec, null, 2) : ""), [spec]);
   const catalogPrompt = useMemo(
@@ -103,8 +257,55 @@ export default function App() {
       return;
     }
     if (previewThrottleRef.current !== null) return;
-    previewThrottleRef.current = setTimeout(flushPreview, 500);
+    previewThrottleRef.current = setTimeout(flushPreview, 800);
   }, [flushPreview]);
+
+  const handleFiles = useCallback((files: FileList | null) => {
+    if (!files || files.length === 0) return;
+
+    const maxBytes = MAX_FILE_SIZE_MB * 1024 * 1024;
+    const accepted: File[] = [];
+    const skipped: string[] = [];
+
+    for (const f of Array.from(files)) {
+      if (f.size > maxBytes) {
+        skipped.push(`${f.name} (too large)`);
+      } else if (!isSupportedFile(f)) {
+        skipped.push(`${f.name} (unsupported type)`);
+      } else {
+        accepted.push(f);
+      }
+    }
+
+    if (skipped.length > 0) {
+      setStreamError(`Skipped: ${skipped.join(", ")}`);
+    }
+    if (accepted.length === 0) return;
+
+    setAttachments((prev) => {
+      const totalCount = prev.length + accepted.length;
+      if (totalCount > MAX_ATTACHMENTS) {
+        setStreamError(`Too many attachments (max ${MAX_ATTACHMENTS}).`);
+        return prev;
+      }
+      const totalSize =
+        prev.reduce((s, a) => s + a.file.size, 0) +
+        accepted.reduce((s, f) => s + f.size, 0);
+      if (totalSize > MAX_TOTAL_BYTES) {
+        setStreamError(`Total attachment size exceeds ${MAX_TOTAL_BYTES / 1024 / 1024} MB.`);
+        return prev;
+      }
+      return [...prev, ...accepted.map(createPendingAttachment)];
+    });
+  }, []);
+
+  const removeAttachment = useCallback((index: number) => {
+    setAttachments((prev) => {
+      const removed = prev[index];
+      if (removed) URL.revokeObjectURL(removed.objectUrl);
+      return prev.filter((_, i) => i !== index);
+    });
+  }, []);
 
   const runStream = useCallback(async () => {
       controllerRef.current?.abort();
@@ -114,8 +315,13 @@ export default function App() {
       setStreamError(null);
 
       try {
+        let apiAttachments: ChatAttachment[] | undefined;
+        if (attachments.length > 0) {
+          apiAttachments = await Promise.all(attachments.map(pendingToApiAttachment));
+        }
+
         await streamSpec(
-          { prompt, previousSpec: spec },
+          { prompt, previousSpec: spec, attachments: apiAttachments },
           {
             onSpec: (next) => setSpec(next),
             onPartialSpec: throttledSetPreview,
@@ -138,7 +344,7 @@ export default function App() {
           setPreviewSpec(null);
         }
       }
-    }, [prompt, spec, storedConfig, throttledSetPreview]);
+    }, [prompt, spec, storedConfig, throttledSetPreview, attachments]);
 
   const handleSend = useCallback(() => {
     if (!isChatReady || !storedConfig) {
@@ -164,6 +370,10 @@ export default function App() {
     setRenderError(null);
     setStreamError(null);
     setIsStreaming(false);
+    setAttachments((prev) => {
+      revokePendingAttachments(prev);
+      return [];
+    });
   }, []);
 
   const handleCloseSetupDialog = useCallback(() => {
@@ -291,8 +501,70 @@ export default function App() {
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
             placeholder="Describe the design you want..."
+            onDrop={(event) => {
+              if (attachmentsEnabled && event.dataTransfer.files.length > 0) {
+                event.preventDefault();
+                void handleFiles(event.dataTransfer.files);
+              }
+            }}
+            onDragOver={(event) => {
+              if (attachmentsEnabled && event.dataTransfer.types.includes("Files")) event.preventDefault();
+            }}
+          />
+          {attachments.length > 0 && (
+            <div className="attachment-list">
+              {attachments.map((att, i) => (
+                <div key={`${att.name}-${i}`} className="attachment-chip">
+                  {att.kind === "image" ? (
+                    <img
+                      src={att.objectUrl}
+                      alt={att.name}
+                      className="attachment-thumb"
+                    />
+                  ) : (
+                    <span className="attachment-doc-icon">&#128196;</span>
+                  )}
+                  <span className="attachment-name" title={att.name}>
+                    {att.name}
+                  </span>
+                  <button
+                    type="button"
+                    className="attachment-remove"
+                    onClick={() => removeAttachment(i)}
+                    aria-label={`Remove ${att.name}`}
+                  >
+                    &times;
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={ALL_ACCEPTED}
+            multiple
+            className="sr-only"
+            onChange={(event) => {
+              void handleFiles(event.target.files);
+              event.target.value = "";
+            }}
           />
           <div className="panel-actions">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isStreaming || !attachmentsEnabled}
+              title={
+                attachmentsEnabled
+                  ? "Attach images or documents"
+                  : storedConfig
+                    ? `${modeLabel(storedConfig.mode)} does not support file attachments`
+                    : "Connect an LLM first"
+              }
+            >
+              Attach File
+            </button>
             <button
               type="button"
               className={storedConfig ? "primary-button" : undefined}

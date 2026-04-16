@@ -1,10 +1,11 @@
 import { useEffect, useRef } from "react";
 import { render, type SoneRenderer as SoneRendererType } from "sone";
-import { browserRenderer } from "@/renderer";
+import { browserRenderer, previewRenderer } from "@/renderer";
 import { specToSoneNode, specToSoneNodeLenient } from "@/spec-to-sone";
 import type { SoneSpec } from "@/types";
 
 const MAX_CANVAS_PIXELS = 8_000_000;
+const RENDER_YIELD_MS = 60;
 
 export interface SoneRendererProps {
   /** Validated final spec. */
@@ -23,6 +24,10 @@ export interface SoneRendererProps {
 function releaseCanvas(canvas: HTMLCanvasElement) {
   canvas.width = 0;
   canvas.height = 0;
+}
+
+function yieldToMain(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -92,6 +97,8 @@ export function SoneRenderer({
     if (renderingRef.current) return;
 
     async function processQueue() {
+      if (renderingRef.current) return;
+
       while (pendingSpecRef.current && !unmountedRef.current) {
         const { active, isPreview: preview } = pendingSpecRef.current;
         pendingSpecRef.current = null;
@@ -103,7 +110,13 @@ export function SoneRenderer({
             : specToSoneNode(active);
           if (!node || unmountedRef.current) continue;
 
-          const canvas = await render<HTMLCanvasElement>(node, rendererRef.current);
+          if (lastCanvasRef.current) {
+            releaseCanvas(lastCanvasRef.current);
+            lastCanvasRef.current = null;
+          }
+
+          const activeRenderer = preview ? previewRenderer : rendererRef.current;
+          const canvas = await render<HTMLCanvasElement>(node, activeRenderer);
           if (unmountedRef.current) {
             releaseCanvas(canvas);
             break;
@@ -114,9 +127,6 @@ export function SoneRenderer({
             continue;
           }
 
-          if (lastCanvasRef.current) {
-            releaseCanvas(lastCanvasRef.current);
-          }
           lastCanvasRef.current = canvas;
 
           canvas.style.width = "100%";
@@ -137,6 +147,10 @@ export function SoneRenderer({
           }
         } finally {
           renderingRef.current = false;
+        }
+
+        if (pendingSpecRef.current) {
+          await yieldToMain(RENDER_YIELD_MS);
         }
       }
     }

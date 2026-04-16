@@ -100,3 +100,6 @@ export function createRenderer(
 }
 
 export const browserRenderer: SoneRenderer = createRenderer(window.devicePixelRatio);
+
+/** Low-memory renderer for streaming previews (1x DPR, no retina). */
+export const previewRenderer: SoneRenderer = createRenderer(1);

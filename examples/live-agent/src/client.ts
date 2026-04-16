@@ -47,10 +47,19 @@ export interface StoredLlmConfig {
   apiKey?: string;
 }
 
+export interface ChatAttachment {
+  name: string;
+  kind: "image" | "document";
+  mimeType: string;
+  dataUrl: string;
+  textContent?: string;
+}
+
 export interface GeneratePayload {
   prompt: string;
   previousSpec?: SoneSpec | null;
   fixture?: boolean;
+  attachments?: ChatAttachment[];
 }
 
 export interface StreamCallbacks {
@@ -335,6 +344,45 @@ function createOpenAiCompatSystemPrompt() {
   return soneCatalog.prompt({
     customRules: [...OPENAI_COMPAT_CUSTOM_RULES],
   });
+}
+
+type TextContentPart = { type: "text"; text: string };
+type ImageContentPart = { type: "image_url"; image_url: { url: string; detail?: string } };
+type ContentPart = TextContentPart | ImageContentPart;
+type MessageContent = string | ContentPart[];
+
+function inlineDocContent(text: string, attachments?: ChatAttachment[]): string {
+  const docs = attachments?.filter((a) => a.kind === "document") ?? [];
+  if (docs.length === 0) return text;
+
+  const docSections = docs.map((d) => {
+    if (d.textContent) return `--- ${d.name} ---\n${d.textContent}`;
+    return `[Attached file: ${d.name}]`;
+  });
+  return `${text}\n\n${docSections.join("\n\n")}`;
+}
+
+function buildMultimodalUserContent(
+  text: string,
+  attachments?: ChatAttachment[],
+): MessageContent {
+  const images = attachments?.filter((a) => a.kind === "image") ?? [];
+  const combinedText = inlineDocContent(text, attachments);
+
+  if (images.length === 0) return combinedText;
+
+  const parts: ContentPart[] = [{ type: "text", text: combinedText }];
+  for (const img of images) {
+    parts.push({ type: "image_url", image_url: { url: img.dataUrl, detail: "auto" } });
+  }
+  return parts;
+}
+
+function extractG4fImageUrls(attachments?: ChatAttachment[]): string[] {
+  if (!attachments) return [];
+  return attachments
+    .filter((a) => a.kind === "image" && a.dataUrl)
+    .map((a) => a.dataUrl);
 }
 
 function buildRepairPrompt(
@@ -785,6 +833,7 @@ async function requestG4fConversationText(
   messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
   config: StoredLlmConfig,
   runtime: RuntimeOptions,
+  images?: string[],
 ) {
   let lastError: Error | null = null;
   let fallbackProviders: string[] | null = null;
@@ -798,23 +847,27 @@ async function requestG4fConversationText(
   for (let attempt = 0; attempt < maxAttempts(); attempt++) {
     const provider = getProvider(attempt);
     try {
+      const body: Record<string, unknown> = {
+        id: String(Date.now()),
+        conversation_id: createConversationId(),
+        model: config.model || DEFAULT_G4F_MODEL,
+        web_search: false,
+        provider,
+        messages,
+        action: "next",
+        download_media: true,
+        debug_mode: false,
+        api_key: buildG4fApiKeyPayload(config),
+        ignored: [...DEFAULT_G4F_IGNORED],
+        aspect_ratio: "16:9",
+      };
+      if (images && images.length > 0) {
+        body.images = images;
+      }
       const response = await ensureFetch(runtime.fetch)(config.url, {
         method: "POST",
         headers: await getG4fConversationHeaders(config, runtime),
-        body: JSON.stringify({
-          id: String(Date.now()),
-          conversation_id: createConversationId(),
-          model: config.model || DEFAULT_G4F_MODEL,
-          web_search: false,
-          provider,
-          messages,
-          action: "next",
-          download_media: true,
-          debug_mode: false,
-          api_key: buildG4fApiKeyPayload(config),
-          ignored: [...DEFAULT_G4F_IGNORED],
-          aspect_ratio: "16:9",
-        }),
+        body: JSON.stringify(body),
         signal: runtime.signal,
       });
 
@@ -848,6 +901,11 @@ function createG4fPatchStream(
   config: StoredLlmConfig,
   runtime: RuntimeOptions,
 ) {
+  const userText = inlineDocContent(
+    buildPatchOnlyUserPrompt(payload),
+    payload.attachments,
+  );
+  const g4fImages = extractG4fImageUrls(payload.attachments);
   const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
     {
       role: "system",
@@ -855,7 +913,7 @@ function createG4fPatchStream(
     },
     {
       role: "user",
-      content: buildPatchOnlyUserPrompt(payload),
+      content: userText,
     },
   ];
 
@@ -904,23 +962,27 @@ function createG4fPatchStream(
       for (let providerAttempt = 0; providerAttempt < maxAttempts(); providerAttempt++) {
         const provider = getProvider(providerAttempt);
         try {
+          const body: Record<string, unknown> = {
+            id: String(Date.now()),
+            conversation_id: createConversationId(),
+            model: config.model || DEFAULT_G4F_MODEL,
+            web_search: false,
+            provider,
+            messages,
+            action: "next",
+            download_media: true,
+            debug_mode: false,
+            api_key: buildG4fApiKeyPayload(config),
+            ignored: [...DEFAULT_G4F_IGNORED],
+            aspect_ratio: "16:9",
+          };
+          if (g4fImages.length > 0) {
+            body.images = g4fImages;
+          }
           response = await ensureFetch(runtime.fetch)(config.url, {
             method: "POST",
             headers: await getG4fConversationHeaders(config, runtime),
-            body: JSON.stringify({
-              id: String(Date.now()),
-              conversation_id: createConversationId(),
-              model: config.model || DEFAULT_G4F_MODEL,
-              web_search: false,
-              provider,
-              messages,
-              action: "next",
-              download_media: true,
-              debug_mode: false,
-              api_key: buildG4fApiKeyPayload(config),
-              ignored: [...DEFAULT_G4F_IGNORED],
-              aspect_ratio: "16:9",
-            }),
+            body: JSON.stringify(body),
             signal: runtime.signal,
           });
 
@@ -1106,11 +1168,22 @@ async function requestSoneChatSpec(
   prompt: string,
   config: StoredLlmConfig,
   runtime: RuntimeOptions,
+  attachments?: ChatAttachment[],
 ): Promise<SoneSpec> {
+  const body: Record<string, unknown> = { message: prompt };
+  if (attachments && attachments.length > 0) {
+    body.attachments = attachments.map((a) => ({
+      name: a.name,
+      kind: a.kind,
+      mimeType: a.mimeType,
+      dataUrl: a.dataUrl,
+      ...(a.textContent ? { textContent: a.textContent } : {}),
+    }));
+  }
   const response = await ensureFetch(runtime.fetch)(config.url, {
     method: "POST",
     headers: buildHeaders(config),
-    body: JSON.stringify({ message: prompt }),
+    body: JSON.stringify(body),
     signal: runtime.signal,
   });
 
@@ -1455,6 +1528,11 @@ async function requestG4fSpec(
   config: StoredLlmConfig,
   runtime: RuntimeOptions,
 ): Promise<SoneSpec> {
+  const userText = inlineDocContent(
+    buildPatchOnlyUserPrompt(payload),
+    payload.attachments,
+  );
+  const g4fImages = extractG4fImageUrls(payload.attachments);
   const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
     {
       role: "system" as const,
@@ -1462,12 +1540,15 @@ async function requestG4fSpec(
     },
     {
       role: "user" as const,
-      content: buildPatchOnlyUserPrompt(payload),
+      content: userText,
     },
   ];
 
   for (let attempt = 0; attempt <= MAX_AUTO_REPAIR_ATTEMPTS; attempt += 1) {
-    const content = await requestG4fConversationText(messages, config, runtime);
+    const content = await requestG4fConversationText(
+      messages, config, runtime,
+      attempt === 0 ? g4fImages : undefined,
+    );
     if (!content.trim()) {
       throw new Error("g4f conversation endpoint returned an empty assistant message.");
     }
@@ -1522,14 +1603,18 @@ async function requestOpenAiLikeSpec(
   config: StoredLlmConfig,
   runtime: RuntimeOptions,
 ): Promise<SoneSpec> {
-  const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
+  const userContent = buildMultimodalUserContent(
+    buildPatchOnlyUserPrompt(payload),
+    payload.attachments,
+  );
+  const messages: Array<{ role: "system" | "user" | "assistant"; content: MessageContent }> = [
     {
       role: "system" as const,
       content: createOpenAiCompatSystemPrompt(),
     },
     {
       role: "user" as const,
-      content: buildPatchOnlyUserPrompt(payload),
+      content: userContent,
     },
   ];
 
@@ -1686,6 +1771,7 @@ export async function createGenerationTextStream(
     prompt: typeof payload.prompt === "string" ? payload.prompt.trim() : "",
     previousSpec: payload.previousSpec ?? null,
     fixture: payload.fixture === true,
+    attachments: payload.attachments,
   };
   const runtime = getRuntimeOptions(options);
 
@@ -1700,7 +1786,7 @@ export async function createGenerationTextStream(
 
   const spec =
     config.mode === "sone-chat"
-      ? await requestSoneChatSpec(request.prompt, config, runtime)
+      ? await requestSoneChatSpec(request.prompt, config, runtime, request.attachments)
       : await requestOpenAiCompatSpec(request, config, runtime);
 
   return createSpecJsonlStream(spec, { signal: runtime.signal });
