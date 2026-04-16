@@ -410,6 +410,16 @@ function buildRepairPrompt(
   reason: string,
   attempt: number,
 ) {
+  const tableHint =
+    reason.includes("/props/rows/") && reason.includes("/cells/")
+      ? [
+          "Table repair hint:",
+          "- Each Table row must be `{ cells: [...] }`.",
+          "- Each `cells[]` item must be an object, not a raw string, number, array, or nested node.",
+          "- Valid cell examples: `{ text: \"Rate\", header: true, width: 100, padding: 8 }` or `{ segments: [{ text: \"$20.00\" }], width: 100, padding: 8 }`.",
+          "- Do not emit `TableRow` or `TableCell` elements. Keep all table content inside `Table.props.rows[].cells[]`.",
+        ].join("\n")
+      : "";
   const issues = reason
     .split("\n")
     .map((line) => line.trim())
@@ -424,6 +434,7 @@ function buildRepairPrompt(
     `Original request: ${payload.prompt}`,
     "Validation errors:",
     issues || "- Unknown validation error",
+    tableHint,
   ].join("\n");
 }
 
